@@ -189,6 +189,8 @@ interface ScrollAnchor {
   text: string | null;
   top: number;
   cardTop: number;
+  /** scrollTop at capture. When the reader scrolls before the restore, the restore is skipped. */
+  st: number;
 }
 
 function captureAnchor(): ScrollAnchor | null {
@@ -202,7 +204,7 @@ function captureAnchor(): ScrollAnchor | null {
     const cr = cmp.getBoundingClientRect();
     const card = cmp.closest<HTMLElement>('[data-path]');
     if (card && cr.bottom > r.top && cr.top < r.bottom)
-      return { path: card.dataset.path!, key: `cmp:${cmp.dataset.composer}`, text: null, top: cr.top, cardTop: card.getBoundingClientRect().top };
+      return { path: card.dataset.path!, key: `cmp:${cmp.dataset.composer}`, text: null, top: cr.top, cardTop: card.getBoundingClientRect().top, st: sc.scrollTop };
   }
   // Probe below the sticky file header.
   const ys = [r.top + 60, r.top + 140, r.top + 260];
@@ -218,6 +220,7 @@ function captureAnchor(): ScrollAnchor | null {
       text: keyed?.querySelector('.c')?.textContent ?? null,
       top: (keyed ?? card).getBoundingClientRect().top,
       cardTop: card.getBoundingClientRect().top,
+      st: sc.scrollTop,
     };
   }
   return null;
@@ -230,7 +233,16 @@ function findCard(path: string): HTMLElement | null {
 function restoreAnchor(a: ScrollAnchor) {
   const sc = S.scroller;
   if (!sc || !a.path) return;
-  const card = findCard(a.path);
+  if (Math.abs(sc.scrollTop - a.st) > 1) return; // the reader scrolled meanwhile
+  try {
+    restoreAnchorNow(a, sc);
+  } finally {
+    a.st = sc.scrollTop;
+  }
+}
+
+function restoreAnchorNow(a: ScrollAnchor, sc: HTMLElement) {
+  const card = findCard(a.path!);
   if (!card) return;
   if (a.key) {
     let el = card.querySelector<HTMLElement>(`[data-k="${CSS.escape(a.key)}"]`);
@@ -1129,17 +1141,17 @@ function receiveHunks(list: DiffFile[], scope: ReviewScope, asked: string[]) {
     for (const d of list) S.hunks.set(fk(d.path, scope), d);
     return;
   }
+  // No preserveScroll here: hunks arrive while the reader scrolls. The virtual list keeps
+  // the line at the reading position in place when the cards grow.
   const topics: string[] = [];
-  preserveScroll(() => {
-    for (const d of list) {
-      const key = fk(d.path, scope);
-      const prev = S.hunks.get(key);
-      S.hunks.set(key, d);
-      if (prev && prev.fingerprint !== d.fingerprint) shiftComposers(d);
-      topics.push(fileTopic(d.path));
-    }
-    emit(...topics);
-  });
+  for (const d of list) {
+    const key = fk(d.path, scope);
+    const prev = S.hunks.get(key);
+    S.hunks.set(key, d);
+    if (prev && prev.fingerprint !== d.fingerprint) shiftComposers(d);
+    topics.push(fileTopic(d.path));
+  }
+  emit(...topics);
 }
 
 // ------------------------------------------------------------------ navigation

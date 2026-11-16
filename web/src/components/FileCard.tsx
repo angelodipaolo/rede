@@ -4,7 +4,7 @@ import type { DiffFileMeta, Side, Thread } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
 import { escapeHtml, markRanges } from '../htmlLines.ts';
 import { nearViewport, observe } from '../io.ts';
-import { estimate } from '../vlist.ts';
+import { estimate, settleSoon } from '../vlist.ts';
 import {
   buildModel,
   CHUNK,
@@ -201,6 +201,7 @@ const Chunk = memo(
     }, [visible, p.rows, p.start, p.end, p.view, p.wrap, p.ver, p.tintKey, p.snap]);
     const leftRef = useRef<HTMLDivElement>(null);
     const rightRef = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => settleSoon(), [html]);
     useLayoutEffect(() => {
       if (!html || p.wrap) return;
       const el = ref.current;
@@ -372,6 +373,7 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
   const f = S.fileByPath.get(path);
   const cardRef = useRef<HTMLDivElement>(null);
   const collapsed = f ? isCollapsed(f) : true;
+  useLayoutEffect(() => settleSoon());
 
   const diff = getDiff(path) ?? getStaleDiff(path);
   const hasDiff = !!diff;

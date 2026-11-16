@@ -38,22 +38,30 @@ const cal = { rowA: 0, rowM: 0, pxA: 0, pxM: 0, rowF: 1, pxF: 1 };
 const rowSampled = new Set<string>();
 let pxSampled = new WeakSet<DiffFileMeta>();
 
+/** Rows predicted from metadata: changed lines, plus 3 context lines on each side of a hunk and a gap row. */
 function metaRows(f: DiffFileMeta): number {
   const changed = S.view === 'split' ? Math.max(f.additions, f.deletions) : f.additions + f.deletions;
-  const hunks = Math.max(1, Math.round((f.additions + f.deletions) / 14));
-  return changed + hunks * (6 + GAP_ROW / ROW);
+  const hunks = Math.max(1, (f.additions + f.deletions) / 5);
+  const gapRows = hunks * (GAP_ROW / ROW);
+  // A hunk never shows more lines than the file has.
+  const cap = (S.view === 'split' ? Math.max(f.oldLineCount, f.newLineCount) : f.oldLineCount + f.additions) + gapRows;
+  return Math.min(changed + hunks * 6 + gapRows, Math.max(changed, cap));
 }
+
+/** Prior weight (in rows / px) so the first few samples do not swing the ratios. */
+const PRIOR_ROWS = 400;
+const PRIOR_PX = 4000;
 
 function recalibrate() {
   if (cal.rowM > 0) {
-    const r = Math.max(0.3, Math.min(4, cal.rowA / cal.rowM));
+    const r = Math.max(0.3, Math.min(4, (cal.rowA + PRIOR_ROWS) / (cal.rowM + PRIOR_ROWS)));
     if (Math.abs(r / cal.rowF - 1) > 0.02) {
       cal.rowF = r;
       dirty = true;
     }
   }
   if (cal.pxM > 0) {
-    const r = Math.max(0.8, Math.min(4, cal.pxA / cal.pxM));
+    const r = Math.max(0.8, Math.min(4, (cal.pxA + PRIOR_PX) / (cal.pxM + PRIOR_PX)));
     if (Math.abs(r / cal.pxF - 1) > 0.02) {
       cal.pxF = r;
       dirty = true;
@@ -236,9 +244,14 @@ export function correctAnchor() {
  * it changes height (estimates replaced by measurements, chunks rendering wrapped lines,
  * a file above collapsing), scrollTop moves by the same amount before paint.
  */
-let reading: { el: Element; top: number; st: number; path: string | null; k: string | null } | null = null;
+let reading: { el: Element; y: number; path: string | null; k: string | null } | null = null;
 
 const ANCHOR_SEL = '.r, .gap, .th-head, .msg, .composer, .draft-chip, .resolved-line, .ph-note, .since-bar, .chunk, .vitem';
+
+/** Position of an element in the scroll content (independent of scrollTop). */
+function contentY(el: Element, sc: HTMLElement): number {
+  return el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+}
 
 export function captureReading() {
   const sc = S.scroller;
@@ -254,8 +267,7 @@ export function captureReading() {
     const k = el.closest<HTMLElement>('[data-k]');
     reading = {
       el,
-      top: el.getBoundingClientRect().top,
-      st: sc.scrollTop,
+      y: contentY(el, sc),
       path: el.closest<HTMLElement>('[data-vpath]')?.dataset.vpath ?? null,
       k: k?.dataset.k ?? null,
     };
@@ -263,7 +275,12 @@ export function captureReading() {
   }
 }
 
-/** Returns false when there is no usable DOM anchor (the caller falls back to the model). */
+/**
+ * Keeps the reading element at the same place on screen: when content above it changed
+ * height, its position in the content moved, and scrollTop moves by the same amount.
+ * Scrolling does not change that position, so this is safe while the reader scrolls.
+ * Returns false when there is no usable DOM anchor (the caller falls back to the model).
+ */
 function keepReading(): boolean {
   const sc = S.scroller;
   const a = reading;
@@ -278,20 +295,38 @@ function keepReading(): boolean {
     }
     a.el = again;
   }
-  if (performance.now() < holdUntil) return true; // a preserveScroll restore owns this frame
-  if (Math.abs(sc.scrollTop - a.st) > 1) {
-    // Scrolled since the capture (by the user or by navigation): nothing to correct.
-    captureReading();
+  const y = contentY(a.el, sc);
+  if (performance.now() < holdUntil) {
+    // A preserveScroll restore owns this change; follow it.
+    a.y = y;
     return true;
   }
-  const d = a.el.getBoundingClientRect().top - a.top;
+  const d = y - a.y;
   if (Math.abs(d) >= 0.5) sc.scrollTop += d;
-  a.st = sc.scrollTop;
-  a.top = a.el.getBoundingClientRect().top;
+  a.y = y;
   return true;
 }
 
+/** A programmatic jump: the old reading position no longer matters. */
+export function dropReading() {
+  reading = null;
+}
+
 nav.recapture = () => captureReading();
+
+let settleQueued = false;
+/**
+ * Called after a component changed its height (a chunk rendered its rows, a card got its
+ * hunks). Corrects scroll before paint; ResizeObserver alone may deliver the change a frame late.
+ */
+export function settleSoon() {
+  if (settleQueued) return;
+  settleQueued = true;
+  queueMicrotask(() => {
+    settleQueued = false;
+    keepReading();
+  });
+}
 
 // ------------------------------------------------------------------ measurement
 
@@ -341,6 +376,7 @@ export function scrollToIndex(i: number) {
   if (!sc) return;
   layout();
   V.anchorIdx = i;
+  reading = null;
   sc.scrollTop = V.tops[i]! + PAD_TOP;
   updateWindow(true);
   const f = S.files[i];
