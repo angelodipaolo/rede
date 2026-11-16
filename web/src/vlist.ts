@@ -27,6 +27,46 @@ export const V = {
 
 const rowCache = new Map<string, number>();
 
+/**
+ * Calibration. The metadata estimate (from +/- counts) cannot know the hunk count or
+ * how many lines wrap, so it learns two ratios from files seen so far:
+ * - rowF: real rows of loaded diffs / rows predicted from metadata;
+ * - pxF:  measured body height / (rows * ROW) of mounted cards (wrapping, threads excluded).
+ * A ratio is applied only when it moved by more than 2%, so heights do not churn every frame.
+ */
+const cal = { rowA: 0, rowM: 0, pxA: 0, pxM: 0, rowF: 1, pxF: 1 };
+const rowSampled = new Set<string>();
+let pxSampled = new WeakSet<DiffFileMeta>();
+
+function metaRows(f: DiffFileMeta): number {
+  const changed = S.view === 'split' ? Math.max(f.additions, f.deletions) : f.additions + f.deletions;
+  const hunks = Math.max(1, Math.round((f.additions + f.deletions) / 14));
+  return changed + hunks * (6 + GAP_ROW / ROW);
+}
+
+function recalibrate() {
+  if (cal.rowM > 0) {
+    const r = Math.max(0.3, Math.min(4, cal.rowA / cal.rowM));
+    if (Math.abs(r / cal.rowF - 1) > 0.02) {
+      cal.rowF = r;
+      dirty = true;
+    }
+  }
+  if (cal.pxM > 0) {
+    const r = Math.max(0.8, Math.min(4, cal.pxA / cal.pxM));
+    if (Math.abs(r / cal.pxF - 1) > 0.02) {
+      cal.pxF = r;
+      dirty = true;
+    }
+  }
+}
+
+function resetCalibration() {
+  Object.assign(cal, { rowA: 0, rowM: 0, pxA: 0, pxM: 0, rowF: 1, pxF: 1 });
+  rowSampled.clear();
+  pxSampled = new WeakSet();
+}
+
 /** Rows a loaded diff takes, without building the full model. */
 function rowsFor(path: string): number | null {
   const d = getDiff(path) ?? getStaleDiff(path);
@@ -59,6 +99,13 @@ function rowsFor(path: string): number | null {
   }
   if (rowCache.size > 5000) rowCache.clear();
   rowCache.set(key, rows);
+  const meta = S.fileByPath.get(path);
+  if (meta && !rowSampled.has(key) && rows > 0) {
+    rowSampled.add(key);
+    cal.rowA += rows;
+    cal.rowM += metaRows(meta);
+    recalibrate();
+  }
   return rows;
 }
 
@@ -67,10 +114,8 @@ export function estimate(f: DiffFileMeta): number {
   if (f.binary || f.tooLarge) return HEADER + 46 + GAP;
   const threads = (S.threadsByPath.get(f.path)?.length ?? 0) * THREAD_EST;
   const rows = rowsFor(f.path);
-  if (rows !== null) return HEADER + rows * ROW + threads + GAP;
-  const changed = S.view === 'split' ? Math.max(f.additions, f.deletions) : f.additions + f.deletions;
-  const hunks = Math.max(1, Math.round((f.additions + f.deletions) / 14));
-  return HEADER + (changed + hunks * 6) * ROW + hunks * GAP_ROW + threads + GAP;
+  if (rows !== null) return Math.round(HEADER + rows * ROW * cal.pxF + threads + GAP);
+  return Math.round(HEADER + metaRows(f) * cal.rowF * ROW * cal.pxF + threads + GAP);
 }
 
 /** Measured heights per metadata object (a new fingerprint is a new object), per collapsed state. */
@@ -82,10 +127,19 @@ export function heightOf(f: DiffFileMeta): number {
   return h ?? estimate(f);
 }
 
-function setMeasured(f: DiffFileMeta, h: number) {
+function setMeasured(f: DiffFileMeta, h: number, el: HTMLElement) {
   let m = measured.get(f);
   if (!m) measured.set(f, (m = [undefined, undefined]));
   m[isCollapsed(f) ? 1 : 0] = h;
+  // Calibrate the row height from fully rendered cards without threads or drafts.
+  if (isCollapsed(f) || pxSampled.has(f) || f.binary || f.tooLarge) return;
+  const rows = rowsFor(f.path);
+  if (!rows || rows < 5 || S.threadsByPath.has(f.path)) return;
+  if (el.querySelector('.chunk.ph, .skel, .attach, .since-bar')) return;
+  pxSampled.add(f);
+  cal.pxA += h - HEADER - GAP;
+  cal.pxM += rows * ROW;
+  recalibrate();
 }
 
 let dirty = true;
@@ -171,9 +225,73 @@ export function correctAnchor() {
   const i = V.index.get(V.anchorPath);
   if (i === undefined) return;
   const delta = V.tops[i]! - V.anchorTop;
-  if (Math.abs(delta) >= 0.5 && performance.now() > holdUntil) sc.scrollTop += delta;
+  if (!keepReading() && Math.abs(delta) >= 0.5 && performance.now() > holdUntil) sc.scrollTop += delta;
   V.anchorTop = V.tops[i]!;
 }
+
+// ------------------------------------------------------------------ reading anchor
+
+/**
+ * The element at the reading position and where it was on screen. When anything above
+ * it changes height (estimates replaced by measurements, chunks rendering wrapped lines,
+ * a file above collapsing), scrollTop moves by the same amount before paint.
+ */
+let reading: { el: Element; top: number; st: number; path: string | null; k: string | null } | null = null;
+
+const ANCHOR_SEL = '.r, .gap, .th-head, .msg, .composer, .draft-chip, .resolved-line, .ph-note, .since-bar, .chunk, .vitem';
+
+export function captureReading() {
+  const sc = S.scroller;
+  reading = null;
+  if (!sc) return;
+  const r = sc.getBoundingClientRect();
+  const x = r.left + Math.min(240, r.width / 2);
+  for (const y of [r.top + 60, r.top + 140, r.top + 260]) {
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !sc.contains(hit) || hit.closest('.fh')) continue;
+    const el = hit.closest(ANCHOR_SEL);
+    if (!el) continue;
+    const k = el.closest<HTMLElement>('[data-k]');
+    reading = {
+      el,
+      top: el.getBoundingClientRect().top,
+      st: sc.scrollTop,
+      path: el.closest<HTMLElement>('[data-vpath]')?.dataset.vpath ?? null,
+      k: k?.dataset.k ?? null,
+    };
+    return;
+  }
+}
+
+/** Returns false when there is no usable DOM anchor (the caller falls back to the model). */
+function keepReading(): boolean {
+  const sc = S.scroller;
+  const a = reading;
+  if (!sc || !a) return false;
+  if (!a.el.isConnected) {
+    // Re-rendered (new highlight, new html): find the same line again.
+    const card = a.path ? sc.querySelector(`[data-vpath="${CSS.escape(a.path)}"]`) : null;
+    const again = card && a.k ? card.querySelector(`[data-k="${CSS.escape(a.k)}"]`) : null;
+    if (!again) {
+      reading = null;
+      return false;
+    }
+    a.el = again;
+  }
+  if (performance.now() < holdUntil) return true; // a preserveScroll restore owns this frame
+  if (Math.abs(sc.scrollTop - a.st) > 1) {
+    // Scrolled since the capture (by the user or by navigation): nothing to correct.
+    captureReading();
+    return true;
+  }
+  const d = a.el.getBoundingClientRect().top - a.top;
+  if (Math.abs(d) >= 0.5) sc.scrollTop += d;
+  a.st = sc.scrollTop;
+  a.top = a.el.getBoundingClientRect().top;
+  return true;
+}
+
+nav.recapture = () => captureReading();
 
 // ------------------------------------------------------------------ measurement
 
@@ -195,14 +313,15 @@ export function measureObserver(): ResizeObserver {
       if (!f) continue;
       const old = heightOf(f);
       if (Math.abs(h - old) < 0.5) continue;
-      setMeasured(f, h);
+      setMeasured(f, h, el);
       dirty = true;
       changed = true;
       const idx = V.index.get(path);
       if (idx !== undefined && idx < V.anchorIdx) adjust += h - old;
     }
     if (!changed || !sc) return;
-    if (adjust && performance.now() > holdUntil) sc.scrollTop += adjust;
+    // Prefer the line on screen: it also covers growth inside the file being read.
+    if (!keepReading() && adjust && performance.now() > holdUntil) sc.scrollTop += adjust;
     updateWindow();
     emit('vspace');
   });
@@ -211,6 +330,7 @@ export function measureObserver(): ResizeObserver {
 
 export function resetHeights() {
   measured = new WeakMap();
+  resetCalibration();
   dirty = true;
 }
 

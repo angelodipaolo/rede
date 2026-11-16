@@ -13,7 +13,7 @@ import { api } from './api.ts';
 import { emit } from './bus.ts';
 import { cancelHighlight, highlightText } from './highlight.ts';
 import { langForPath } from './langmap.ts';
-import type { Expansion } from './model.ts';
+import type { Expansion, GapRow } from './model.ts';
 
 export type ViewMode = 'split' | 'unified';
 export type Theme = 'system' | 'light' | 'dark';
@@ -45,6 +45,10 @@ export interface ComposerState {
   threadId?: number;
   messageId?: number;
   text: string;
+  /** Edit composers: the message body when editing started. */
+  original?: string;
+  /** Closed with Esc: the draft is kept and shown as a chip until resumed or discarded. */
+  hidden?: boolean;
 }
 
 export interface SinceState {
@@ -101,6 +105,8 @@ export const S = {
   agents: [] as AgentPresence[],
   conn: 'connecting' as ConnState,
   view: (lsGet('margin:view') === 'unified' ? 'unified' : 'split') as ViewMode,
+  /** Soft-wrap long lines (default) or scroll them sideways. */
+  wrap: lsGet('margin:wrap') !== '0',
   theme: ((lsGet('margin:theme') as Theme | null) ?? 'system') as Theme,
   /** Per scope: path -> explicit collapsed state. */
   collapsed: new Map<ReviewScope, Map<string, boolean>>(),
@@ -151,6 +157,14 @@ export function setView(v: ViewMode) {
   preserveScroll(() => {
     S.view = v;
     lsSet('margin:view', v);
+    emit('view', 'ui');
+  });
+}
+
+export function toggleWrap() {
+  preserveScroll(() => {
+    S.wrap = !S.wrap;
+    lsSet('margin:wrap', S.wrap ? null : '0');
     emit('view', 'ui');
   });
 }
@@ -264,7 +278,10 @@ export function preserveScroll(fn: () => void) {
     requestAnimationFrame(() => {
       restoreAnchor(a);
       // Lazily mounted chunks may settle one frame later.
-      requestAnimationFrame(() => restoreAnchor(a));
+      requestAnimationFrame(() => {
+        restoreAnchor(a);
+        nav.recapture();
+      });
     });
   }
 }
@@ -274,7 +291,7 @@ export function preserveScroll(fn: () => void) {
 function indexThreads() {
   const by = new Map<string, Thread[]>();
   for (const t of S.threads.values()) {
-    if (t.inScope === false) continue;
+    if (!t.inScope) continue;
     let arr = by.get(t.anchor.path);
     if (!arr) by.set(t.anchor.path, (arr = []));
     arr.push(t);
@@ -591,7 +608,7 @@ export function threadLabel(t: Thread): string {
 
 export function upsertThread(t: Thread, opts: { quiet: boolean; reindex: boolean }) {
   const prev = S.threads.get(t.id);
-  if (prev && prev.updatedAt === t.updatedAt && prev.messages.length === t.messages.length && prev.inScope === t.inScope && prev.anchor.endLine === t.anchor.endLine && prev.outdated === t.outdated && prev.agentState === t.agentState && prev.resolved === t.resolved && JSON.stringify(prev.messages) === JSON.stringify(t.messages)) return;
+  if (prev && JSON.stringify(prev) === JSON.stringify(t)) return;
   S.threads.set(t.id, t);
   const last = t.messages[t.messages.length - 1];
   if (!opts.quiet && last && last.author.kind === 'agent' && !(prev && prev.messages.some((m) => m.id === last.id))) {
@@ -743,7 +760,8 @@ export function openComposer(c: Omit<ComposerState, 'text'> & { text?: string })
   const existing = S.composers.get(c.key);
   preserveScroll(() => {
     if (!existing) S.composers.set(c.key, { ...c, text: c.text ?? '' });
-    emit(fileTopic(c.path), 'composers');
+    else existing.hidden = false;
+    emit(fileTopic(c.path), 'composers', `t:${c.threadId ?? -1}`);
   });
   saveDrafts();
   // Focus after render.
@@ -767,6 +785,23 @@ export function updateComposer(key: string, text: string) {
   saveDrafts();
 }
 
+/** Esc: closes the composer and keeps a non-empty draft. */
+export function stashComposer(key: string, text?: string) {
+  const c = S.composers.get(key);
+  if (!c) return;
+  if (text !== undefined) c.text = text;
+  if (!c.text.trim() || (c.kind === 'edit' && c.text === c.original)) {
+    closeComposer(key);
+    return;
+  }
+  preserveScroll(() => {
+    c.hidden = true;
+    emit(fileTopic(c.path), 'composers', `t:${c.threadId ?? -1}`);
+  });
+  saveDrafts();
+}
+
+/** Removes the draft (after submit, or an explicit Discard). */
 export function closeComposer(key: string) {
   const c = S.composers.get(key);
   if (!c) return;
@@ -875,7 +910,7 @@ export function getExpansion(path: string) {
   return S.expansions.get(fk(path));
 }
 
-export async function expandGap(path: string, gapId: string, dir: 'up' | 'down' | 'all', step = 20) {
+export async function expandGap(path: string, gap: GapRow, dir: 'up' | 'down' | 'all', step = 20) {
   const f = S.fileByPath.get(path);
   if (!f) return;
   const c = getContent(f);
@@ -885,11 +920,11 @@ export async function expandGap(path: string, gapId: string, dir: 'up' | 'down' 
   preserveScroll(() => {
     let m = S.expansions.get(fk(path));
     if (!m) S.expansions.set(fk(path), (m = new Map()));
-    const e = m.get(gapId) ?? { top: 0, bottom: 0 };
-    if (dir === 'all') e.top = 1e9;
-    else if (dir === 'down') e.top += step;
-    else e.bottom += step;
-    m.set(gapId, e);
+    const e = m.get(gap.base) ?? { ranges: [] };
+    if (dir === 'all') e.ranges.push([gap.ks, gap.ke]);
+    else if (dir === 'down') e.ranges.push([gap.ks, Math.min(gap.ke, gap.ks + step)]);
+    else e.ranges.push([Math.max(gap.ks, gap.ke - step), gap.ke]);
+    m.set(gap.base, e);
     emit(fileTopic(path));
   });
 }
@@ -1120,6 +1155,8 @@ export const nav = {
   toFile: (_path: string, _opts?: { instant?: boolean }) => {},
   /** Scroll position of a file's top relative to the scroller, from the layout model. */
   fileTop: (_path: string): number | null => null,
+  /** Re-reads the reading position after a programmatic scroll adjustment. */
+  recapture: () => {},
 };
 
 export function scrollToFile(path: string, opts: { instant?: boolean } = {}) {
@@ -1162,7 +1199,7 @@ export function jumpToThread(id: number) {
     if (f && !S.scroller?.querySelector(`[data-thread="${id}"]`)) scrollToFile(f.path, { instant: true });
     requestAnimationFrame(() => tryScroll(120));
   };
-  if (t.inScope === false && t.homeScope && t.homeScope !== S.scope) {
+  if (!t.inScope && t.homeScope !== S.scope) {
     setScope(t.homeScope, { then: () => setTimeout(go, 50) });
   } else go();
 }

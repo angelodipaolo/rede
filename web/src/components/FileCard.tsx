@@ -14,6 +14,7 @@ import {
   wordRanges,
   type DLine,
   type GapRow,
+  type Pin,
   type Row,
   type SRow,
   type URow,
@@ -94,7 +95,13 @@ function registerPane(key: string, el: HTMLElement) {
   set.add(el);
   const left = paneLeft.get(key);
   if (left) el.scrollLeft = left;
+  let raf = 0;
   const onScroll = () => {
+    if (!raf)
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        updateOverflow(el.parentElement);
+      });
     if (syncing) return;
     syncing = true;
     paneLeft.set(key, el.scrollLeft);
@@ -108,6 +115,26 @@ function registerPane(key: string, el: HTMLElement) {
   };
 }
 
+/**
+ * No-wrap mode: marks rows whose text runs past the right edge of their pane. CSS shows a
+ * sticky arrow at the edge of those rows, so cut-off lines are visible at a glance.
+ */
+export function updateOverflow(chunk: HTMLElement | null) {
+  if (!chunk || !chunk.classList.contains('nw') || !chunk.isConnected) return;
+  const panes = chunk.querySelectorAll<HTMLElement>(':scope > .pane');
+  const marks: [Element, boolean][] = [];
+  panes.forEach((p) => {
+    if (p.scrollWidth <= p.clientWidth + 1 && !p.querySelector('.r.long')) return;
+    const right = p.getBoundingClientRect().right;
+    for (const c of p.querySelectorAll('.c')) marks.push([c.parentElement!, c.getBoundingClientRect().right - 20 > right]);
+  });
+  for (const [r, on] of marks) if (r.classList.contains('long') !== on) r.classList.toggle('long', on);
+}
+
+export function updateAllOverflow() {
+  S.scroller?.querySelectorAll<HTMLElement>('.chunk.nw').forEach(updateOverflow);
+}
+
 // ------------------------------------------------------------------ chunk
 
 interface ChunkProps {
@@ -116,6 +143,7 @@ interface ChunkProps {
   start: number;
   end: number;
   view: 'split' | 'unified';
+  wrap: boolean;
   content: Content | undefined;
   ver: number;
   tint: Set<string>;
@@ -127,14 +155,32 @@ const Chunk = memo(
   function Chunk(p: ChunkProps) {
     const ref = useRef<HTMLDivElement>(null);
     const [visible, setVisible] = useState(false);
+    /** Last rendered height. Wrapped rows are taller than ROW_H; placeholders keep the real height. */
+    const lastH = useRef<number | null>(null);
     useLayoutEffect(() => {
       const el = ref.current!;
       if (nearViewport(el, 1200)) setVisible(true);
-      return observe(el, '1200px 0px', setVisible);
+      return observe(el, '1200px 0px', (v) => {
+        if (!v && ref.current) lastH.current = ref.current.offsetHeight;
+        setVisible(v);
+      });
     }, []);
+    useLayoutEffect(() => {
+      lastH.current = null;
+    }, [p.view, p.wrap]);
     const height = (p.end - p.start) * ROW_H;
     const html = useMemo(() => {
       if (!visible) return null;
+      if (p.view === 'split' && p.wrap) {
+        // One grid: each left cell sits beside its right cell, so wrapped rows keep the same height.
+        let g = '';
+        for (let i = p.start; i < p.end; i++) {
+          const row = p.rows[i] as SRow;
+          if (isGap(row)) continue;
+          g += cellHtml(row.l, 'old', p.content, p.tint, p.snap) + cellHtml(row.r, 'new', p.content, p.tint, p.snap);
+        }
+        return [g];
+      }
       if (p.view === 'split') {
         let l = '';
         let r = '';
@@ -152,20 +198,28 @@ const Chunk = memo(
         if (!isGap(row)) u += unifiedHtml(row, p.content, p.tint, p.snap);
       }
       return [u];
-    }, [visible, p.rows, p.start, p.end, p.view, p.ver, p.tintKey, p.snap]);
+    }, [visible, p.rows, p.start, p.end, p.view, p.wrap, p.ver, p.tintKey, p.snap]);
     const leftRef = useRef<HTMLDivElement>(null);
     const rightRef = useRef<HTMLDivElement>(null);
     useLayoutEffect(() => {
-      if (!html) return;
+      if (!html || p.wrap) return;
+      const el = ref.current;
+      const raf = requestAnimationFrame(() => updateOverflow(el));
+      return () => cancelAnimationFrame(raf);
+    }, [html, p.wrap]);
+    useLayoutEffect(() => {
+      if (!html || p.wrap) return;
       const offs: (() => void)[] = [];
       if (leftRef.current) offs.push(registerPane(`${p.path}|${p.view === 'split' ? 'l' : 'u'}`, leftRef.current));
       if (rightRef.current) offs.push(registerPane(`${p.path}|r`, rightRef.current));
       return () => offs.forEach((o) => o());
-    }, [!!html, p.view]);
-    if (!html) return <div ref={ref} class="chunk ph" style={{ height }} />;
+    }, [!!html, p.view, p.wrap]);
+    if (!html) return <div ref={ref} class="chunk ph" style={{ height: p.wrap ? lastH.current ?? height : height }} />;
+    if (p.wrap)
+      return <div ref={ref} class={`chunk wrap ${p.view === 'split' ? 'sgrid' : 'ulist'}`} dangerouslySetInnerHTML={{ __html: html[0]! }} />;
     if (p.view === 'split')
       return (
-        <div ref={ref} class="chunk split" style={{ height }}>
+        <div ref={ref} class="chunk nw split" style={{ height }}>
           <div class="pane" ref={leftRef}>
             <div class="pin" dangerouslySetInnerHTML={{ __html: html[0]! }} />
           </div>
@@ -175,7 +229,7 @@ const Chunk = memo(
         </div>
       );
     return (
-      <div ref={ref} class="chunk unified" style={{ height }}>
+      <div ref={ref} class="chunk nw unified" style={{ height }}>
         <div class="pane" ref={leftRef}>
           <div class="pin" dangerouslySetInnerHTML={{ __html: html[0]! }} />
         </div>
@@ -187,6 +241,7 @@ const Chunk = memo(
     a.start === b.start &&
     a.end === b.end &&
     a.view === b.view &&
+    a.wrap === b.wrap &&
     a.ver === b.ver &&
     a.tintKey === b.tintKey &&
     a.snap === b.snap &&
@@ -196,7 +251,7 @@ const Chunk = memo(
 // ------------------------------------------------------------------ gap row
 
 function Gap({ path, gap, canExpand }: { path: string; gap: GapRow; canExpand: boolean }) {
-  const exp = (dir: 'up' | 'down' | 'all') => void expandGap(path, gap.id, dir);
+  const exp = (dir: 'up' | 'down' | 'all') => void expandGap(path, gap, dir);
   const small = gap.count <= 20;
   return (
     <div class="gap" data-k={`g${gap.id}`}>
@@ -339,15 +394,28 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
   const ctx = content ? content.new ?? content.old : null;
   const exp = getExpansion(path);
   const expKey = exp ? JSON.stringify([...exp]) : '';
+  const threads = S.threadsByPath.get(path) ?? [];
+  // Threads and drafts on unchanged lines between hunks: reveal those lines so they show in place.
+  const pins: Pin[] = [];
+  for (const t of threads) {
+    const a = t.anchor;
+    if (!t.outdated && a.startLine !== null && a.endLine !== null) pins.push({ side: a.side, start: a.startLine, end: a.endLine });
+  }
+  for (const c of S.composers.values()) {
+    const a = c.anchor;
+    if (c.kind === 'new' && c.path === path && c.scope === S.scope && a && a.startLine !== null && a.endLine !== null)
+      pins.push({ side: a.side, start: a.startLine, end: a.endLine });
+  }
+  const pinKey = pins.map((x) => `${x.side}${x.start}-${x.end}`).join(',');
   const model = useMemo(
-    () => (shown ? buildModel(shown, exp, ctx, !sinceOn) : null),
-    [shown, expKey, ctx, sinceOn],
+    () => (shown ? buildModel(shown, exp, ctx, !sinceOn, pins) : null),
+    [shown, expKey, ctx, sinceOn, pinKey],
   );
 
   if (!f) return null;
 
   const view = S.view;
-  const threads = S.threadsByPath.get(path) ?? [];
+  const wrap = S.wrap;
   const unresolved = threads.filter((t) => !t.resolved).length;
 
   let body: preact.ComponentChildren = null;
@@ -371,13 +439,25 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
       if (b - a > 2000) return;
       for (let i = a; i <= b; i++) tint.add((side === 'old' ? 'o' : 'n') + i);
     };
+    /** Row of a line: its own row, else the hidden-lines row that contains it (until the text loads). */
+    const rowOf = (side: Side, line: number): number | undefined => {
+      const idx = index.get((side === 'old' ? 'o' : 'n') + line);
+      if (idx !== undefined) return idx;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i]!;
+        if (!isGap(r) || !r.count) continue;
+        const first = side === 'old' ? r.o : r.n;
+        if (line >= first && line < first + r.count) return i;
+      }
+      return undefined;
+    };
     for (const t of threads) {
       const a = t.anchor;
       if (t.outdated || a.startLine === null || a.endLine === null) {
         top.push({ t });
         continue;
       }
-      const idx = index.get((a.side === 'old' ? 'o' : 'n') + a.endLine);
+      const idx = rowOf(a.side, a.endLine);
       if (idx === undefined) {
         top.push({ t });
         continue;
@@ -394,7 +474,7 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
         top.push({ c });
         continue;
       }
-      const idx = index.get((a.side === 'old' ? 'o' : 'n') + a.endLine);
+      const idx = rowOf(a.side, a.endLine);
       if (idx === undefined) {
         top.push({ c });
         continue;
@@ -414,19 +494,19 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
       for (let s = segStart; s < end; s += CHUNK) {
         const e = Math.min(end, s + CHUNK);
         parts.push(
-          <Chunk key={`c${s}`} path={path} rows={rows} start={s} end={e} view={view} content={content} ver={ver} tint={tint} tintKey={tintKey} snap={sinceOn} />,
+          <Chunk key={`c${s}`} path={path} rows={rows} start={s} end={e} view={view} wrap={wrap} content={content} ver={ver} tint={tint} tintKey={tintKey} snap={sinceOn} />,
         );
       }
     };
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]!;
+      const att = attach.get(i);
       if (isGap(r)) {
         flush(i);
         parts.push(<Gap key={`g${r.id}`} path={path} gap={r} canExpand={!sinceOn && !f.binary} />);
         segStart = i + 1;
-        continue;
+        if (!att) continue;
       }
-      const att = attach.get(i);
       if (att) {
         flush(i + 1);
         parts.push(
@@ -445,7 +525,7 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
 
     body = (
       <div
-        class={`fb ${view}`}
+        class={`fb ${view}${wrap ? ' wrapped' : ''}`}
         onMouseDown={(e) => onGutterDown(e, path)}
         onMouseMove={(e) => onRowHover(e, path)}
         onMouseLeave={() => (S.hover = null)}

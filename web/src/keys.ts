@@ -12,6 +12,7 @@ import {
   setSidebar,
   setView,
   setViewed,
+  toggleWrap,
 } from './store.ts';
 import { isTyping } from './util.ts';
 
@@ -91,6 +92,9 @@ export function installKeys(): () => void {
         if (h) commentOn(h.path, h.side, h.line, h.line);
         break;
       }
+      case 'w':
+        toggleWrap();
+        break;
       case 'u':
         setView(S.view === 'split' ? 'unified' : 'split');
         break;

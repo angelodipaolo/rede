@@ -12,6 +12,7 @@ import {
   reply,
   S,
   setResolved,
+  stashComposer,
   threadLabel,
   toggleResolvedOpen,
   updateComposer,
@@ -33,7 +34,8 @@ export function Avatar({ kind, name }: { kind: 'human' | 'agent'; name: string }
 function MessageView({ m, thread }: { m: Message; thread: Thread }) {
   useTopics('composers');
   const editKey = `edit:${m.id}`;
-  const editing = S.composers.has(editKey);
+  const draft = S.composers.get(editKey);
+  const editing = !!draft && !draft.hidden;
   const agent = m.author.kind === 'agent';
   return (
     <div class={`msg ${agent ? 'msg-a ' + agentColorClass(m.author.name) : 'msg-h'}`}>
@@ -49,7 +51,7 @@ function MessageView({ m, thread }: { m: Message; thread: Thread }) {
               <button
                 class="ib sm"
                 title="Edit"
-                onClick={() => openComposer({ key: editKey, kind: 'edit', scope: S.scope, path: thread.anchor.path, threadId: thread.id, messageId: m.id, text: m.body })}
+                onClick={() => openComposer({ key: editKey, kind: 'edit', scope: S.scope, path: thread.anchor.path, threadId: thread.id, messageId: m.id, text: m.body, original: m.body })}
               >
                 <Icon name="edit" size={14} />
               </button>
@@ -66,6 +68,7 @@ function MessageView({ m, thread }: { m: Message; thread: Thread }) {
           )}
         </div>
         {editing ? <Composer ck={editKey} /> : <Markdown src={m.body} class="msg-body" />}
+        {draft?.hidden && <DraftChip ck={editKey} label="Unsaved edit" />}
       </div>
     </div>
   );
@@ -155,7 +158,8 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
   }
 
   const replyKey = `reply:${id}`;
-  const replying = S.composers.has(replyKey);
+  const replyDraft = S.composers.get(replyKey);
+  const replying = !!replyDraft && !replyDraft.hidden;
   const needsMe = !t.resolved && lastMsg?.author.kind === 'agent';
 
   return (
@@ -205,6 +209,8 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
           <div class="reply-wrap">
             <Composer ck={replyKey} />
           </div>
+        ) : replyDraft ? (
+          <DraftChip ck={replyKey} label="Draft reply" />
         ) : (
           <button
             class="reply-fake"
@@ -232,6 +238,7 @@ export function Composer({ ck }: { ck: string }) {
   }, [text]);
 
   if (!c) return null;
+  if (c.hidden) return <DraftChip ck={ck} label={c.kind === 'new' ? 'Draft comment' : 'Draft'} />;
 
   const submit = async (mode: 'comment' | 'note' | 'resolve') => {
     const body = (taRef.current?.value ?? text).trim();
@@ -276,15 +283,20 @@ export function Composer({ ck }: { ck: string }) {
           } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
-            closeComposer(ck);
+            stashComposer(ck, (e.target as HTMLTextAreaElement).value);
           }
         }}
       />
       <div class="cmp-bar">
-        <span class="cmp-hint">⌘↵ to {c.kind === 'edit' ? 'save' : c.kind === 'reply' ? 'reply' : 'comment'} · Esc to cancel</span>
+        <span class="cmp-hint">⌘↵ to {c.kind === 'edit' ? 'save' : c.kind === 'reply' ? 'reply' : 'comment'} · Esc closes and keeps the draft</span>
         <span class="sp" />
-        <button class="btn sm ghost" onClick={() => closeComposer(ck)} disabled={busy}>
-          Cancel
+        <button
+          class="btn sm ghost"
+          title={c.kind === 'edit' ? 'Discard the changes to this message' : 'Delete this draft'}
+          onClick={() => closeComposer(ck)}
+          disabled={busy}
+        >
+          Discard
         </button>
         {c.kind === 'new' && (
           <button class="btn sm ghost" title="Private note. Agents never see it." onClick={() => void submit('note')} disabled={busy || !text.trim()}>
@@ -300,6 +312,35 @@ export function Composer({ ck }: { ck: string }) {
           {c.kind === 'edit' ? 'Save' : c.kind === 'reply' ? 'Reply' : 'Comment'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** A draft closed with Esc. Its text stays until it is posted or discarded. */
+export function DraftChip({ ck, label = 'Draft' }: { ck: string; label?: string }) {
+  useTopics('composers');
+  const c = S.composers.get(ck);
+  if (!c || !c.hidden) return null;
+  const first = c.text.trim().split('\n')[0] ?? '';
+  const resume = () => openComposer(c);
+  return (
+    <div class="draft-chip" data-k={`draft:${ck}`}>
+      <Icon name="edit" size={13} />
+      <span class="dc-label">{label}</span>
+      <button class="dc-txt" title="Resume editing" onClick={resume}>
+        {first}
+      </button>
+      <button class="btn sm ghost" onClick={resume}>
+        Resume
+      </button>
+      <button
+        class="btn sm ghost"
+        onClick={() => {
+          if (confirm('Discard this draft?')) closeComposer(ck);
+        }}
+      >
+        Discard
+      </button>
     </div>
   );
 }

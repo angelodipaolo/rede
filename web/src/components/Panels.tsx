@@ -84,7 +84,7 @@ export function ThreadsPanel() {
         {list.map((t) => {
           const last = t.messages[t.messages.length - 1];
           const unread = S.unread.has(t.id);
-          const offScope = t.inScope === false;
+          const offScope = !t.inScope;
           const gone = !offScope && !S.fileByPath.has(t.anchor.path);
           return (
             <button key={t.id} class={`pitem${unread ? ' unread' : ''}${t.resolved ? ' resolved' : ''}`} onClick={() => jumpToThread(t.id)}>
@@ -130,7 +130,7 @@ export function ThreadsPanel() {
 export function OutdatedSection() {
   useTopics('threads', 'files');
   const [open, setOpen] = useState(false);
-  const list = [...S.threads.values()].filter((t) => t.inScope !== false && !S.fileByPath.has(t.anchor.path));
+  const list = [...S.threads.values()].filter((t) => t.inScope && !S.fileByPath.has(t.anchor.path));
   if (!list.length) return null;
   const unresolved = list.filter((t) => !t.resolved).length;
   return (
@@ -197,6 +197,7 @@ const KEYS: [string, string][] = [
   ['v', 'Toggle viewed on the current file'],
   ['c', 'Comment on the hovered line'],
   ['u', 'Toggle split / unified'],
+  ['w', 'Toggle soft wrap of long lines'],
   ['s', 'Cycle scope (all / staged / unstaged)'],
   ['t', 'Filter files'],
   ['o', 'Collapse or expand the current file'],

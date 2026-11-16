@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ReviewScope } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
-import { cycleTheme, S, setScope, setSidebar, setView } from '../store.ts';
+import { cycleTheme, S, setScope, setSidebar, setView, toggleWrap } from '../store.ts';
 import { agentColorClass, copyText, relTime } from '../util.ts';
 import { Icon } from './Icon.tsx';
 
@@ -208,6 +208,15 @@ export function TopBar() {
           <Icon name="unified" />
         </button>
       </div>
+      <button
+        class={`ib${S.wrap ? ' on' : ''}`}
+        title={S.wrap ? 'Long lines wrap. Switch to no wrap (w)' : 'Long lines scroll sideways. Switch to soft wrap (w)'}
+        aria-label="Soft wrap long lines"
+        aria-pressed={S.wrap}
+        onClick={toggleWrap}
+      >
+        <Icon name={S.wrap ? 'wrap' : 'nowrap'} />
+      </button>
       <button class="ib" title={dark ? 'Light theme' : 'Dark theme'} onClick={cycleTheme}>
         <Icon name={dark ? 'sun' : 'moon'} />
       </button>

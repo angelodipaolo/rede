@@ -5,9 +5,9 @@ import { subscribe, useTopics } from '../bus.ts';
 import { setObserverRoot } from '../io.ts';
 import { installKeys } from '../keys.ts';
 import { init, S } from '../store.ts';
-import { correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
+import { captureReading, correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
 import { relTime } from '../util.ts';
-import { FileCard } from './FileCard.tsx';
+import { FileCard, updateAllOverflow } from './FileCard.tsx';
 import { OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { TopBar } from './TopBar.tsx';
@@ -74,11 +74,15 @@ function DiffColumn() {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
+        captureReading();
         updateWindow();
       });
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    const onResize = () => updateWindow();
+    const onResize = () => {
+      updateWindow();
+      updateAllOverflow();
+    };
     window.addEventListener('resize', onResize);
     const offView = subscribe('view', () => {
       resetHeights();
@@ -86,11 +90,13 @@ function DiffColumn() {
     });
     // Collapse/expand changes heights of files that may not be mounted.
     const offFiles = subscribe('files', () => requestAnimationFrame(() => updateWindow(true)));
+    const offLayout = subscribe('layout', () => requestAnimationFrame(updateAllOverflow));
     return () => {
       el.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', onResize);
       offView();
       offFiles();
+      offLayout();
     };
   }, []);
 

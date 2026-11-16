@@ -148,7 +148,7 @@ export function Sidebar() {
 
   const counts = new Map<string, { total: number; open: number; unread: boolean }>();
   for (const t of S.threads.values()) {
-    if (t.inScope === false) continue;
+    if (!t.inScope) continue;
     const c = counts.get(t.anchor.path) ?? { total: 0, open: 0, unread: false };
     c.total++;
     if (!t.resolved) c.open++;

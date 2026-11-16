@@ -24,6 +24,8 @@ const P: Record<string, string> = {
   note: 'M3.5 2.5h9v11h-9zM5.5 5.5h5M5.5 8h5M5.5 10.5h3',
   search: 'M7 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM10 10l3.5 3.5',
   filter: 'M2.5 3.5h11l-4 5v4l-3 1.5v-5.5z',
+  wrap: 'M2.5 4h11M2.5 8h9a2 2 0 0 1 0 4H9M10.5 10.5L9 12l1.5 1.5M2.5 12h4',
+  nowrap: 'M2.5 4h11M2.5 8h11M2.5 12h11',
   dot: 'M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
 };
 
