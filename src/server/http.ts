@@ -111,7 +111,9 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
 
   function checkSecurity(req: http.IncomingMessage): void {
     const host = (req.headers.host ?? '').toLowerCase();
-    if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
+    // Hosts of extra allowed origins (a dev proxy that keeps the Host header) are accepted too.
+    const extraHosts = (opts.allowOrigins ?? []).map((o) => o.replace(/^https?:\/\//, '').toLowerCase());
+    if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}` && !extraHosts.includes(host)) {
       throw new HttpError(403, 'Forbidden host.');
     }
     const origin = req.headers.origin;
