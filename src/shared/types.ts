@@ -80,7 +80,8 @@ export interface Review extends ReviewSummary {
   resolved: { from: string; to: string | null };
   /** Changes when the diff content changes. The UI refetches when it sees a new value. */
   diffFingerprint: string;
-  files: DiffFile[];
+  /** Metadata only. Load hunks with POST /api/reviews/:id/hunks. */
+  files: DiffFileMeta[];
   threads: Thread[];
   agents: AgentPresence[];
 }
@@ -98,7 +99,14 @@ export interface RepoInfo {
 
 export type FileStatus = 'added' | 'deleted' | 'modified' | 'renamed';
 
-export interface DiffFile {
+/**
+ * Scale target: 1,500 changed files and 25,000 changed lines must stay fast.
+ * So the review response carries only per-file metadata. The UI loads hunks
+ * on demand (POST hunks) for files near the viewport and caches them by
+ * path + fingerprint. The server caches parsed per-file diffs by fingerprint,
+ * so a change to one file does not re-diff the others.
+ */
+export interface DiffFileMeta {
   /** Path on the new side (old side path for deleted files). Repo-relative, forward slashes. */
   path: string;
   /** Previous path. Set only for renames. */
@@ -107,8 +115,6 @@ export interface DiffFile {
   binary: boolean;
   additions: number;
   deletions: number;
-  /** Empty for binary files and for files over the size limit. */
-  hunks: Hunk[];
   /** True when the diff was too large and hunks were omitted. */
   tooLarge: boolean;
   /** Hash of this file's diff. Viewed state holds only while it stays the same. */
@@ -124,6 +130,11 @@ export interface DiffFile {
   /** Total line count of each side. Lets the UI expand context. 0 when the side does not exist. */
   oldLineCount: number;
   newLineCount: number;
+}
+
+export interface DiffFile extends DiffFileMeta {
+  /** Empty for binary files and for files over the size limit. */
+  hunks: Hunk[];
 }
 
 export interface Hunk {
@@ -231,6 +242,7 @@ export interface AgentPresence {
  * GET  /api/reviews                        -> ReviewSummary[]
  * POST /api/reviews            OpenReviewRequest   -> ReviewSummary   (create or reuse)
  * GET  /api/reviews/:id                    -> Review   (recomputes the diff, re-anchors threads)
+ * POST /api/reviews/:id/hunks?scope=  HunksRequest -> DiffFile[]   (hunks for the given paths; unknown paths are skipped)
  * GET  /api/reviews/:id/file?path=&side=   -> FileContent   (full text of one side)
  * GET  /api/reviews/:id/since-viewed?path= -> SinceViewed   (what changed in one file after the user marked it viewed)
  * PUT  /api/reviews/:id/viewed  SetViewedRequest   -> { ok: true }
@@ -254,6 +266,11 @@ export interface Health {
 
 export interface OpenReviewRequest {
   spec: ReviewSpec;
+}
+
+export interface HunksRequest {
+  /** New-side paths (DiffFileMeta.path). At most 200 per request. */
+  paths: string[];
 }
 
 export interface FileContent {
