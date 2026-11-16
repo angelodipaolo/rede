@@ -215,6 +215,72 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     expect(w.out).toContain('margin wait');
   }, 30_000);
 
+  const infoFile = () => path.join(repo.dir, '.git', 'margin', 'server.json');
+  const readInfo = () => JSON.parse(fs.readFileSync(infoFile(), 'utf8'));
+
+  it('never replaces a server started by a newer build', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    await run(['list']);
+    const first = readInfo();
+    fs.writeFileSync(infoFile(), JSON.stringify({ ...first, build: first.build + 60_000 })); // a newer CLI started it
+    for (let i = 0; i < 3; i++) expect((await run(['list'])).code).toBe(0);
+    expect(readInfo().pid).toBe(first.pid);
+  }, 30_000);
+
+  it('keeps using an older server when it cannot take the start lock (sandbox)', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    await run(['list']);
+    const first = readInfo();
+    fs.writeFileSync(infoFile(), JSON.stringify({ ...first, build: 1 }));
+    const dir = path.dirname(infoFile());
+    fs.chmodSync(dir, 0o555);
+    try {
+      const r = await run(['threads']);
+      expect(r.err).toBe('');
+      expect(r.code).toBe(0);
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+    expect(readInfo().pid).toBe(first.pid);
+  }, 30_000);
+
+  it('fails fast and says why when it may not start a server', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    const gitDir = path.join(repo.dir, '.git');
+    fs.chmodSync(gitDir, 0o555);
+    const t0 = Date.now();
+    let r;
+    try {
+      r = await run(['wait', '--timeout', '5']);
+    } finally {
+      fs.chmodSync(gitDir, 0o755);
+    }
+    expect(Date.now() - t0).toBeLessThan(4000);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('no Margin server runs for this repo, and this command may not start one');
+    expect(r.err).toContain('(EACCES)');
+    expect(r.err).not.toContain('start.lock');
+  }, 30_000);
+
+  it('removes a start lock left by a process that is gone, at once', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
+    fs.mkdirSync(path.join(repo.dir, '.git', 'margin'), { recursive: true });
+    fs.writeFileSync(path.join(repo.dir, '.git', 'margin', 'start.lock'), String(dead));
+    const t0 = Date.now();
+    const r = await run(['threads']);
+    expect(r.code).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+  }, 30_000);
+
   it('opens a review, comments from stdin, waits, replies', async () => {
     repo = new TempRepo();
     repo.write('src/x.ts', lines(10));
