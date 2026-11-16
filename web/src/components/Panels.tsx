@@ -193,7 +193,7 @@ export function OrphanDrafts() {
     for (const c of list) {
       if (seen.current.has(c.key)) continue;
       seen.current.add(c.key);
-      pushToast({ kind: 'info', text: `Draft kept at the end of the diff: ${draftWhere(c).toLowerCase()} left the diff.` });
+      pushToast({ kind: 'info', text: `Its code left the diff. Draft kept at the end of the diff: ${draftWhere(c)}.` });
     }
   });
   if (!list.length) return null;

@@ -298,6 +298,33 @@ export function preserveScroll(fn: () => void) {
   }
 }
 
+/**
+ * Runs a change to one file (collapse, viewed) and keeps that file's header where it was.
+ * When the reader was inside the file (its header stuck at the top), the header stays at the top.
+ */
+function keepCard(path: string, fn: () => void) {
+  const sc = S.scroller;
+  const card = findCard(path);
+  if (!sc || !card) {
+    preserveScroll(fn);
+    return;
+  }
+  const target = Math.max(0, card.getBoundingClientRect().top - sc.getBoundingClientRect().top);
+  holdUntil = performance.now() + 120;
+  fn();
+  const fix = () => {
+    const c = findCard(path);
+    if (c) sc.scrollTop += c.getBoundingClientRect().top - sc.getBoundingClientRect().top - target;
+  };
+  requestAnimationFrame(() => {
+    fix();
+    requestAnimationFrame(() => {
+      fix();
+      nav.recapture();
+    });
+  });
+}
+
 // ------------------------------------------------------------------ review load & reconcile
 
 function indexThreads() {
@@ -768,8 +795,17 @@ export function composerKeyFor(a: Anchor, scope: ReviewScope = S.scope) {
   return a.startLine === null ? `new:${scope}:${a.path}:file` : `new:${scope}:${a.path}:${a.side}:${a.startLine}:${a.endLine}`;
 }
 
+/** The composer to focus as soon as it mounts (keys typed right after the click must land in it). */
+export let focusComposer: string | null = null;
+export function takeFocusComposer(key: string): boolean {
+  if (focusComposer !== key) return false;
+  focusComposer = null;
+  return true;
+}
+
 export function openComposer(c: Omit<ComposerState, 'text'> & { text?: string }) {
   const existing = S.composers.get(c.key);
+  focusComposer = c.key;
   preserveScroll(() => {
     if (!existing) S.composers.set(c.key, { ...c, text: c.text ?? '' });
     else existing.hidden = false;
@@ -781,7 +817,10 @@ export function openComposer(c: Omit<ComposerState, 'text'> & { text?: string })
     requestAnimationFrame(() => {
       const el = document.querySelector<HTMLTextAreaElement>(`[data-composer="${CSS.escape(c.key)}"] textarea`);
       if (el) {
-        el.focus();
+        if (focusComposer === c.key || document.activeElement !== el) {
+          focusComposer = null;
+          if (document.activeElement !== el) el.focus();
+        }
         const r = el.getBoundingClientRect();
         const s = S.scroller?.getBoundingClientRect();
         if (s && (r.bottom > s.bottom || r.top < s.top)) el.scrollIntoView({ block: 'center' });
@@ -853,7 +892,7 @@ export function setSelection(sel: Selection | null) {
 // ------------------------------------------------------------------ files
 
 export function setCollapsed(path: string, collapsed: boolean) {
-  preserveScroll(() => {
+  keepCard(path, () => {
     colMap().set(path, collapsed);
     emit(fileTopic(path), 'tree', 'vspace');
   });
@@ -863,21 +902,13 @@ export async function setViewed(path: string, viewed: boolean) {
   const f = S.fileByPath.get(path);
   if (!f) return;
   const prev = { viewed: f.viewed, changed: f.changedSinceViewed, collapsed: colMap().get(path) };
-  const card = findCard(path);
-  const sc = S.scroller;
-  const cardAbove = card && sc ? card.getBoundingClientRect().top < sc.getBoundingClientRect().top : false;
-  f.viewed = viewed;
-  if (viewed) f.changedSinceViewed = false;
-  colMap().set(path, viewed);
-  if (viewed) S.since.delete(fk(path));
-  emit(fileTopic(path), 'progress', 'tree', 'vspace');
-  if (viewed && cardAbove) {
-    // The reader was inside this file: keep the collapsed header at the top.
-    requestAnimationFrame(() => {
-      const c = findCard(path);
-      if (c && sc) sc.scrollTop += c.getBoundingClientRect().top - sc.getBoundingClientRect().top;
-    });
-  }
+  keepCard(path, () => {
+    f.viewed = viewed;
+    if (viewed) f.changedSinceViewed = false;
+    colMap().set(path, viewed);
+    if (viewed) S.since.delete(fk(path));
+    emit(fileTopic(path), 'progress', 'tree', 'vspace');
+  });
   const scope = S.scope;
   const ok = await guard(api.setViewed(S.reviewId, scope, path, viewed), 'Mark viewed');
   if (!ok && scope === S.scope) {

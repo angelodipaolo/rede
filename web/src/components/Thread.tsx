@@ -13,6 +13,7 @@ import {
   S,
   setResolved,
   stashComposer,
+  takeFocusComposer,
   threadLabel,
   toggleResolvedOpen,
   updateComposer,
@@ -230,6 +231,13 @@ export function Composer({ ck }: { ck: string }) {
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState(c?.text ?? '');
 
+  useLayoutEffect(() => {
+    const ta = taRef.current;
+    if (ta && takeFocusComposer(ck)) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+  });
   useLayoutEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
