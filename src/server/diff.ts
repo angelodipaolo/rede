@@ -127,7 +127,7 @@ export function parseChunk(chunk: string): ParsedChunk {
     if (l.startsWith('Binary files ') || l === 'GIT binary patch') binary = true;
   }
   while (i < lines.length) {
-    const m = HUNK_RE.exec(lines[i]!);
+    const m = HUNK_RE.exec(stripCr(lines[i]!));
     if (!m) {
       i++;
       continue;
