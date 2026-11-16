@@ -20,6 +20,27 @@ describe('reanchor (pure)', () => {
     expect(reanchor(['a', 'b'], capture(file, 3, 3), 3)).toBeNull();
   });
 
+  it('does not jump to an identical line elsewhere when the commented line was edited', () => {
+    const src = ['function a() {', '  const x = load();', '  return null;', '}', '', 'function b() {', '  const y = other();', '  return null;', '}'];
+    const cap = capture(src, 3, 3); // the first "return null;"
+    const edited = [...src];
+    edited[2] = '  return undefined;';
+    expect(reanchor(edited, cap, 3)).toBeNull();
+  });
+
+  it('follows the line, not an identical line that moved into its old position', () => {
+    const src = ['function a() {', '  const x = load();', '  return null;', '}'];
+    const cap = capture(src, 3, 3);
+    const inserted = ['function z() {', '  const q = 1;', '  return null;', '}', ...src];
+    expect(reanchor(inserted, cap, 3)).toBe(7);
+  });
+
+  it('follows a substantial block into new surroundings', () => {
+    const block = ['  const total = items.reduce(sum, 0);', '  const avg = total / items.length;', '  return Math.round(avg);'];
+    const cap = capture(['a1', 'a2', 'a3', ...block, 'b1', 'b2', 'b3'], 4, 6);
+    expect(reanchor(['x1', 'x2', 'x3', 'x4', ...block, 'y1'], cap, 4)).toBe(5);
+  });
+
   it('refuses weak snippets without matching context', () => {
     const src = ['function a() {', '  x();', '}', 'other'];
     const cap = capture(src, 3, 3); // "}"
