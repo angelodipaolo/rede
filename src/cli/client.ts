@@ -4,7 +4,8 @@ import http from 'node:http';
 import path from 'node:path';
 import type { Health } from '../shared/types.ts';
 import { marginDir, type RepoPaths } from '../server/git.ts';
-import { readServerInfo, serverInfoPath, type ServerInfo } from '../server/server.ts';
+import { VERSION } from '../server/errors.ts';
+import { buildId, readServerInfo, serverInfoPath, type ServerInfo } from '../server/server.ts';
 
 export class ApiFailure extends Error {
   constructor(
@@ -98,33 +99,50 @@ export async function findServer(repo: RepoPaths): Promise<ServerInfo | null> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Returns the running server, starting a detached one when none runs. */
+/** True when the server was started by an older build of the CLI (or an older version). */
+function outdated(info: ServerInfo, build: number | undefined): boolean {
+  if (info.version !== VERSION) return true;
+  return build !== undefined && (info.build === undefined || info.build < build);
+}
+
+/**
+ * Returns the running server, starting a detached one when none runs. A server started by an
+ * older build is stopped and replaced on the same port (an open browser tab reconnects).
+ */
 export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<ServerInfo> {
+  const build = buildId(cliPath);
   const existing = await findServer(repo);
-  if (existing) return existing;
+  if (existing && !outdated(existing, build)) return existing;
   const dir = marginDir(repo);
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, 'start.lock');
   let haveLock = false;
-  for (let i = 0; i < 100 && !haveLock; i++) {
+  for (let i = 0; i < 300 && !haveLock; i++) {
     try {
       fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
       haveLock = true;
     } catch {
       // Someone else is starting it. Use theirs once it is up; break a stale lock.
       const info = await findServer(repo);
-      if (info) return info;
+      if (info && !outdated(info, build)) return info;
       try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > 10_000) fs.unlinkSync(lock);
+        // Longer than a start can take (15 s), so a slow start is never broken into.
+        if (Date.now() - fs.statSync(lock).mtimeMs > 30_000) fs.unlinkSync(lock);
       } catch {
         /* gone */
       }
       await sleep(100);
     }
   }
+  if (!haveLock) throw new Error(`Another margin command holds ${lock}. Delete it if no margin command is running.`);
   try {
     const again = await findServer(repo);
-    if (again) return again;
+    if (again && !outdated(again, build)) return again;
+    let preferredPort: number | undefined;
+    if (again) {
+      preferredPort = again.port;
+      await stopServer(repo);
+    }
     const stale = readServerInfo(repo);
     if (stale) {
       try {
@@ -134,11 +152,13 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
       }
     }
     const log = fs.openSync(path.join(dir, 'server.log'), 'a');
+    const env = { ...process.env };
+    if (preferredPort) env.MARGIN_PREFERRED_PORT = String(preferredPort);
     const child = spawn(process.execPath, [cliPath, '__serve'], {
       cwd: repo.root,
       detached: true,
       stdio: ['ignore', log, log],
-      env: process.env,
+      env,
     });
     child.unref();
     fs.closeSync(log);

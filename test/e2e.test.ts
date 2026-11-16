@@ -174,6 +174,26 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
       child.stdin?.end(input ?? '');
     });
 
+  it('replaces a server started by an older build, on the same port', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    await run(['list']);
+    const file = path.join(repo.dir, '.git', 'margin', 'server.json');
+    const first = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(first.build).toBeGreaterThan(0);
+    const waiting = run(['wait', '--timeout', '20']);
+    await new Promise((r) => setTimeout(r, 800));
+    fs.writeFileSync(file, JSON.stringify({ ...first, build: 1 })); // pretend an older build runs
+    await run(['list']);
+    const second = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(second.pid).not.toBe(first.pid);
+    expect(second.port).toBe(first.port);
+    const w = await waiting;
+    expect(w.code).toBe(0);
+    expect(w.out).toContain('margin wait');
+  }, 30_000);
+
   it('opens a review, comments from stdin, waits, replies', async () => {
     repo = new TempRepo();
     repo.write('src/x.ts', lines(10));

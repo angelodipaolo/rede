@@ -228,7 +228,14 @@ async function cmdWait(args: Args): Promise<void> {
   const c = await connect();
   const review = str(args, '--review');
   const q = `agent=${enc(name)}&timeout=${Math.floor(t)}${review ? `&review=${enc(review)}` : ''}`;
-  const r = await api<WaitResponse>(c, 'GET', `/api/agent/wait?${q}`);
+  let r: WaitResponse;
+  try {
+    r = await api<WaitResponse>(c, 'GET', `/api/agent/wait?${q}`);
+  } catch (e) {
+    // The server stopped or restarted (a newer margin build) while this wait was blocked.
+    if (e instanceof ApiFailure) throw e;
+    return out('The Margin server restarted while waiting. No new comments. Run `margin wait` again.');
+  }
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
   if (r.timedOut || !r.threads.length) return out('No new comments. Run `margin wait` again.');
   const n = r.threads.length;

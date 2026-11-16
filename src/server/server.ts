@@ -12,6 +12,17 @@ export interface ServerInfo {
   port: number;
   startedAt: string;
   version: string;
+  /** Build id of the CLI bundle that started the server (see buildId). A newer CLI restarts an older server. */
+  build?: number;
+}
+
+/** Build id of a CLI bundle: its mtime. Rebuilding (npm run build:server) changes it. */
+export function buildId(cliPath: string): number | undefined {
+  try {
+    return Math.floor(fs.statSync(cliPath).mtimeMs);
+  } catch {
+    return undefined;
+  }
 }
 
 export function serverInfoPath(repo: RepoPaths): string {
@@ -30,6 +41,9 @@ export interface StartOptions {
   cwd: string;
   /** 0 or undefined: a random free port. */
   port?: number;
+  /** Try this port first, fall back to a random one when it is taken (restart of an outdated server). */
+  preferredPort?: number;
+  build?: number;
   webDir: string | null;
   /** Exit after this long with no browser, no waiting agent and no request. 0 disables. */
   idleMs?: number;
@@ -74,15 +88,23 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     onShutdown: () => void close().then(() => opts.onExit?.()),
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(opts.port ?? 0, '127.0.0.1', () => resolve());
-  });
+  const listen = (port: number) =>
+    new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+  if (!opts.port && opts.preferredPort) {
+    // The browser tab of the old server reconnects by itself when the port stays the same.
+    await listen(opts.preferredPort).catch(() => listen(0));
+  } else await listen(opts.port ?? 0);
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : 0;
   const infoFile = serverInfoPath(repo);
   if (opts.writeInfo !== false) {
-    const info: ServerInfo = { pid: process.pid, port, startedAt: new Date().toISOString(), version: VERSION };
+    const info: ServerInfo = { pid: process.pid, port, startedAt: new Date().toISOString(), version: VERSION, build: opts.build };
     const tmp = `${infoFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(info, null, 2));
     fs.renameSync(tmp, infoFile);
@@ -122,6 +144,8 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
           }
         }
       }
+      // margin.close() answered waiting agents ("timed out"); let those responses go out first.
+      await new Promise((r) => setTimeout(r, 100));
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
       store.close();
@@ -140,6 +164,8 @@ export async function runServerProcess(cwd: string, webDir: string | null): Prom
     cwd,
     webDir,
     port: envNum('MARGIN_PORT'),
+    preferredPort: envNum('MARGIN_PREFERRED_PORT'),
+    build: process.argv[1] ? buildId(process.argv[1]) : undefined,
     idleMs: idleSec === undefined ? undefined : idleSec * 1000,
     claimTimeoutMs: envNum('MARGIN_CLAIM_TIMEOUT') === undefined ? undefined : envNum('MARGIN_CLAIM_TIMEOUT')! * 1000,
     allowOrigins: (process.env.MARGIN_ALLOW_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean),
