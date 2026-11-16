@@ -35,6 +35,27 @@ export type ReviewSpec =
   | { kind: 'commit'; rev: string }
   | { kind: 'range'; from: string; to: string };
 
+/**
+ * Which part of the uncommitted changes a view shows. Applies to 'working' reviews only;
+ * every other review kind has the single scope 'all'.
+ *
+ *   scope      old side      new side
+ *   all        HEAD          working tree
+ *   staged     HEAD          index
+ *   unstaged   index         working tree
+ *
+ * A scope is a VIEW of one review, not a separate review. Threads belong to the review.
+ * The server stores each thread against the content it was written on (HEAD, index or
+ * working tree) and shows it in every scope where that content is one of the two sides.
+ * Example: a thread written on the new side in 'all' (working tree) also shows on the new
+ * side in 'unstaged'. A thread written on the new side in 'staged' (index) shows on the
+ * old side in 'unstaged'. Viewed state is kept per scope.
+ *
+ * Endpoints that take a scope use the query parameter `scope` (default 'all'):
+ * GET review, GET file, GET since-viewed, PUT viewed, POST threads, GET events.
+ */
+export type ReviewScope = 'all' | 'staged' | 'unstaged';
+
 export interface ReviewSummary {
   /** Stable, URL-safe id derived from the spec. Example: "working", "branch-feature-x-vs-main". */
   id: string;
@@ -49,6 +70,12 @@ export interface ReviewSummary {
 
 export interface Review extends ReviewSummary {
   repo: RepoInfo;
+  /** The scope this response shows. */
+  scope: ReviewScope;
+  /** Scopes this review supports. ['all', 'staged', 'unstaged'] for working reviews, else ['all']. */
+  scopes: ReviewScope[];
+  /** Number of changed files in each supported scope. Lets the UI label the scope toggle. */
+  scopeFileCounts: Partial<Record<ReviewScope, number>>;
   /** Resolved revisions for the current diff. `to` is null when the right side is the working tree. */
   resolved: { from: string; to: string | null };
   /** Changes when the diff content changes. The UI refetches when it sees a new value. */
@@ -148,8 +175,20 @@ export interface Thread {
   /** Small integer, unique in the repo. The agent CLI uses it: `margin reply 12`. */
   id: number;
   reviewId: string;
-  /** Current position. The server re-anchors it when the code moves. */
+  /**
+   * Current position, expressed in the sides of the scope the response was requested in.
+   * The server re-anchors it when the code moves.
+   */
   anchor: Anchor;
+  /**
+   * False when the content this thread was written on is not a side of the requested scope
+   * (example: a working-tree thread while the view is 'staged'). The UI does not render such
+   * threads inline; it lists them in the threads panel with a control to switch scope.
+   * `anchor` is then expressed in `homeScope`.
+   */
+  inScope: boolean;
+  /** The scope the thread was created in. Switching to it always makes the thread visible. */
+  homeScope: ReviewScope;
   /** The anchored lines as they were when the thread was created. */
   snippet: string[];
   /**
@@ -269,7 +308,10 @@ export interface ApiError {
   error: string;
 }
 
-/** Pushed over SSE to every browser that has the review open. */
+/**
+ * Pushed over SSE to every browser that has the review open. Thread payloads and
+ * diff-changed are expressed in the scope given on the events URL.
+ */
 export type ServerEvent =
   | { type: 'thread'; thread: Thread } // created or changed in any way
   | { type: 'thread-deleted'; threadId: number }
