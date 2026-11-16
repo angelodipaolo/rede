@@ -147,7 +147,22 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
 
   if (t.resolved && !S.openResolved.has(id)) {
     return (
-      <div class="thread resolved-line" data-thread={id} ref={ref} onClick={() => toggleResolvedOpen(id)}>
+      <div
+        class="thread resolved-line"
+        data-thread={id}
+        ref={ref}
+        role="button"
+        tabIndex={0}
+        aria-expanded={false}
+        title="Show resolved thread"
+        onClick={() => toggleResolvedOpen(id)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleResolvedOpen(id);
+          }
+        }}
+      >
         <Icon name="check" size={14} />
         <span class="rl-ref">{lineRef}</span>
         <span class="rl-txt">{first?.body.split('\n')[0]}</span>

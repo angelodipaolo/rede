@@ -20,7 +20,7 @@
   --border-soft: #ebebe7;
   --text: #1c1e22;
   --text-2: #5a6069;
-  --text-3: #979ca4;
+  --text-3: #6e737b;
   --accent: #5260dc;
   --accent-soft: rgba(82, 96, 220, 0.1);
   --accent-text: #3d4abf;
@@ -59,7 +59,7 @@
     --border-soft: #212328;
     --text: #e3e5e9;
     --text-2: #a1a7b0;
-    --text-3: #676d77;
+    --text-3: #868c96;
     --accent: #8f99ff;
     --accent-soft: rgba(143, 153, 255, 0.13);
     --accent-text: #aab2ff;
@@ -97,7 +97,7 @@
   --border-soft: #212328;
   --text: #e3e5e9;
   --text-2: #a1a7b0;
-  --text-3: #676d77;
+  --text-3: #868c96;
   --accent: #8f99ff;
   --accent-soft: rgba(143, 153, 255, 0.13);
   --accent-text: #aab2ff;
@@ -346,6 +346,7 @@ kbd {
   overflow: hidden;
 }
 .repo {
+  flex: none;
   font-weight: 650;
   color: var(--text);
   text-decoration: none;
@@ -1179,6 +1180,15 @@ kbd {
   flex-direction: column;
   gap: 8px;
 }
+/* Wide split view: threads on the new side sit under the new column. */
+.fb.split {
+  container-type: inline-size;
+}
+@container (min-width: 1500px) {
+  .attach.sn {
+    padding-left: calc(50% + 12px);
+  }
+}
 .attach.top {
   border-top: 0;
 }
@@ -1849,4 +1859,38 @@ kbd {
 }
 .rl-title {
   font-weight: 600;
+}
+
+/* ------------------------------------------------------------ focus */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.filter:focus-within {
+  box-shadow: inset 0 -2px var(--accent);
+}
+.toast-go {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------ narrow windows */
+@media (max-width: 1180px) {
+  .prog .bar,
+  .presence .tb-lbl {
+    display: none;
+  }
+}
+@media (max-width: 1000px) {
+  .ident .title,
+  .ident .branch,
+  .segn {
+    display: none;
+  }
+  .topbar {
+    gap: 6px;
+  }
 }

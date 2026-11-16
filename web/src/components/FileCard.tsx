@@ -512,7 +512,10 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
       if (att) {
         flush(i + 1);
         parts.push(
-          <div class="attach" key={`a${i}`}>
+          <div
+            class={`attach${view === 'split' && att.every((x) => (x.t?.anchor ?? x.c?.anchor)?.side === 'new') ? ' sn' : ''}`}
+            key={`a${i}`}
+          >
             {att.map((x) => (x.t ? <ThreadView key={`t${x.t.id}`} id={x.t.id} /> : <Composer key={x.c!.key} ck={x.c!.key} />))}
           </div>,
         );

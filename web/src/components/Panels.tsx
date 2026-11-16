@@ -136,7 +136,7 @@ export function OutdatedSection() {
   return (
     <section class="card outdated-sec">
       <div class="fh" onClick={() => setOpen(!open)}>
-        <button class="chev">
+        <button class="chev" aria-label={open ? 'Hide outdated threads' : 'Show outdated threads'} aria-expanded={open}>
           <Icon name={open ? 'downchev' : 'right'} />
         </button>
         <span class="badge outdated">Outdated</span>
@@ -247,9 +247,10 @@ export function Toasts() {
         >
           {t.kind === 'agent' && <Avatar kind="agent" name={t.agent ?? 'agent'} />}
           <span class="toast-txt">{t.text}</span>
-          {t.threadId !== undefined && <span class="toast-go">Jump</span>}
+          {t.threadId !== undefined && <button class="toast-go">Jump</button>}
           <button
             class="ib sm"
+            aria-label="Dismiss"
             onClick={(e) => {
               e.stopPropagation();
               dismissToast(t.id);
@@ -293,7 +294,7 @@ export function ShortcutSheet() {
         <div class="panel-h">
           <b>Keyboard shortcuts</b>
           <span class="sp" />
-          <button class="ib" onClick={close}>
+          <button class="ib" aria-label="Close" onClick={close}>
             <Icon name="x" />
           </button>
         </div>

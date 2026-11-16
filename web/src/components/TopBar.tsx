@@ -92,11 +92,13 @@ function Presence() {
           emit('ui');
         }}
         title="Agents"
+        aria-label={agents.length ? 'Connected agents' : 'Connect an agent'}
+        aria-expanded={S.connect}
       >
         {agents.length === 0 ? (
           <>
             <Icon name="plug" size={15} />
-            <span>Connect agent</span>
+            <span class="tb-lbl">Connect agent</span>
           </>
         ) : (
           agents.map((a) => (
