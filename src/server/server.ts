@@ -96,14 +96,30 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
         resolve();
       });
     });
-  if (!opts.port && opts.preferredPort) {
-    // The browser tab of the old server reconnects by itself when the port stays the same.
-    await listen(opts.preferredPort).catch(() => listen(0));
+  // Reuse the last port of this repo when it is free. An open browser tab then reconnects
+  // by itself after a restart, and a bookmarked review URL keeps working.
+  const lastPortFile = path.join(marginDir(repo), 'last-port');
+  let preferred = opts.preferredPort;
+  if (!preferred && opts.writeInfo !== false) {
+    try {
+      const n = Number(fs.readFileSync(lastPortFile, 'utf8').trim());
+      if (Number.isInteger(n) && n > 1023 && n < 65536) preferred = n;
+    } catch {
+      /* first start */
+    }
+  }
+  if (!opts.port && preferred) {
+    await listen(preferred).catch(() => listen(0));
   } else await listen(opts.port ?? 0);
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : 0;
   const infoFile = serverInfoPath(repo);
   if (opts.writeInfo !== false) {
+    try {
+      fs.writeFileSync(lastPortFile, String(port));
+    } catch {
+      /* not fatal */
+    }
     const info: ServerInfo = { pid: process.pid, port, startedAt: new Date().toISOString(), version: VERSION, build: opts.build };
     const tmp = `${infoFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(info, null, 2));
