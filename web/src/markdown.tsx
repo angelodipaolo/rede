@@ -43,8 +43,8 @@ export function Markdown({ src, class: cls }: { src: string; class?: string }) {
         code.innerHTML = cached;
         return;
       }
-      void highlightText(text.replace(/\n$/, ''), lang ?? (text.length < 4000 ? 'auto' : null)).then((lines) => {
-        if (!lines) return;
+      void highlightText(text.replace(/\n$/, ''), lang ?? (text.length < 4000 ? 'auto' : null)).done.then((lines) => {
+        if (!lines || lines === 'cancelled') return;
         const out = lines.join('\n');
         codeCache.set(key, out);
         if (code.isConnected && code.textContent === text) code.innerHTML = out;

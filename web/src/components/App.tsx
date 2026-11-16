@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ReviewSummary } from '../../../src/shared/types.ts';
 import { api } from '../api.ts';
-import { useTopics } from '../bus.ts';
+import { subscribe, useTopics } from '../bus.ts';
 import { setObserverRoot } from '../io.ts';
 import { installKeys } from '../keys.ts';
-import { init, S, setCurrent } from '../store.ts';
+import { init, S } from '../store.ts';
+import { correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
 import { relTime } from '../util.ts';
 import { FileCard } from './FileCard.tsx';
 import { OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
@@ -24,6 +25,40 @@ function EmptyState() {
   );
 }
 
+function VItem({ path }: { path: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current!;
+    const ro = measureObserver();
+    ro.observe(el);
+    return () => ro.unobserve(el);
+  }, []);
+  return (
+    <div class="vitem" data-vpath={path} ref={ref}>
+      <FileCard path={path} />
+    </div>
+  );
+}
+
+function DiffList() {
+  useTopics('files', 'vwin', 'vspace');
+  useLayoutEffect(() => correctAnchor());
+  const files = S.files;
+  if (!files.length) return null;
+  layout();
+  const first = Math.min(V.first, files.length - 1);
+  const last = Math.min(V.last, files.length - 1);
+  const items = [];
+  for (let i = first; i <= last; i++) items.push(<VItem key={files[i]!.path} path={files[i]!.path} />);
+  return (
+    <div class="vlist">
+      <div style={{ height: V.tops[first] }} />
+      {items}
+      <div style={{ height: Math.max(0, V.total - V.tops[last + 1]!) }} />
+    </div>
+  );
+}
+
 function DiffColumn() {
   useTopics('files', 'review');
   const ref = useRef<HTMLDivElement>(null);
@@ -39,19 +74,28 @@ function DiffColumn() {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
-        const r = el.getBoundingClientRect();
-        const hit = document.elementFromPoint(r.left + Math.min(200, r.width / 2), r.top + 8) as HTMLElement | null;
-        const card = hit?.closest<HTMLElement>('[data-path]');
-        if (card) setCurrent(card.dataset.path!);
+        updateWindow();
       });
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
-    return () => el.removeEventListener('scroll', onScroll);
+    const onResize = () => updateWindow();
+    window.addEventListener('resize', onResize);
+    const offView = subscribe('view', () => {
+      resetHeights();
+      updateWindow(true);
+    });
+    // Collapse/expand changes heights of files that may not be mounted.
+    const offFiles = subscribe('files', () => requestAnimationFrame(() => updateWindow(true)));
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+      offView();
+      offFiles();
+    };
   }, []);
 
-  useEffect(() => {
-    if ((!S.current || !S.fileByPath.has(S.current)) && S.files.length) setCurrent(S.files[0]!.path);
+  useLayoutEffect(() => {
+    if (ready) updateWindow();
   });
 
   const r = S.review;
@@ -61,11 +105,9 @@ function DiffColumn() {
         <>
           {S.loadError && !r && <div class="empty"><h2>Could not load the review</h2><p>{S.loadError}</p></div>}
           {!r && !S.loadError && <div class="empty"><p class="muted">Loading…</p></div>}
-          <OutdatedSection />
           {r && S.files.length === 0 && <EmptyState />}
-          {S.files.map((f) => (
-            <FileCard key={f.path} path={f.path} />
-          ))}
+          <DiffList />
+          <OutdatedSection />
           {S.files.length > 0 && <div class="tail">End of diff · {S.files.length} files</div>}
         </>
       )}

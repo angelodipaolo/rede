@@ -1,6 +1,7 @@
 import type {
   AddMessageRequest,
   CreateThreadRequest,
+  DiffFile,
   FileContent,
   Review,
   ReviewScope,
@@ -45,6 +46,8 @@ const sc = (scope: ReviewScope) => `scope=${scope}`;
 export const api = {
   reviews: () => call<ReviewSummary[]>('GET', '/api/reviews'),
   review: (id: string, scope: ReviewScope) => call<Review>('GET', `/api/reviews/${enc(id)}?${sc(scope)}`),
+  hunks: (id: string, scope: ReviewScope, paths: string[]) =>
+    call<DiffFile[]>('POST', `/api/reviews/${enc(id)}/hunks?${sc(scope)}`, { paths }),
   file: (id: string, scope: ReviewScope, path: string, side: Side) =>
     call<FileContent>('GET', `/api/reviews/${enc(id)}/file?path=${enc(path)}&side=${side}&${sc(scope)}`),
   sinceViewed: (id: string, scope: ReviewScope, path: string) =>

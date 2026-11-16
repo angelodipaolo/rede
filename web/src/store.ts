@@ -2,6 +2,7 @@ import type {
   AgentPresence,
   Anchor,
   DiffFile,
+  DiffFileMeta,
   Review,
   ReviewScope,
   ServerEvent,
@@ -10,7 +11,7 @@ import type {
 } from '../../src/shared/types.ts';
 import { api } from './api.ts';
 import { emit } from './bus.ts';
-import { highlightText } from './highlight.ts';
+import { cancelHighlight, highlightText } from './highlight.ts';
 import { langForPath } from './langmap.ts';
 import type { Expansion } from './model.ts';
 
@@ -27,6 +28,10 @@ export interface Content {
   loading: boolean;
   /** Bumps when text or highlight arrives, so rows know to re-render. */
   ver: number;
+  hlDone: boolean;
+  /** Text the current highlight was computed for, while a new highlight is pending. */
+  staleOld?: string[] | null;
+  staleNew?: string[] | null;
 }
 
 export interface ComposerState {
@@ -87,15 +92,18 @@ export const S = {
   review: null as Review | null,
   scopeCache: new Map<ReviewScope, Review>(),
   loadError: null as string | null,
-  files: [] as DiffFile[],
-  fileByPath: new Map<string, DiffFile>(),
+  files: [] as DiffFileMeta[],
+  fileByPath: new Map<string, DiffFileMeta>(),
+  /** Loaded hunks by scope|path. Valid while the fingerprint matches the metadata. */
+  hunks: new Map<string, DiffFile>(),
   threads: new Map<number, Thread>(),
   threadsByPath: new Map<string, Thread[]>(),
   agents: [] as AgentPresence[],
   conn: 'connecting' as ConnState,
   view: (lsGet('margin:view') === 'unified' ? 'unified' : 'split') as ViewMode,
   theme: ((lsGet('margin:theme') as Theme | null) ?? 'system') as Theme,
-  collapsed: new Map<string, boolean>(),
+  /** Per scope: path -> explicit collapsed state. */
+  collapsed: new Map<ReviewScope, Map<string, boolean>>(),
   since: new Map<string, SinceState>(),
   expansions: new Map<string, Map<string, Expansion>>(),
   contents: new Map<string, Content>(),
@@ -235,6 +243,8 @@ function restoreAnchor(a: ScrollAnchor) {
 }
 
 let anchorDepth = 0;
+/** While a DOM-anchored restore is pending, the virtual list must not also correct scroll. */
+export let holdUntil = 0;
 let heldAnchor: ScrollAnchor | null = null;
 
 /** Runs a state change and keeps the line the reader looks at in the same place on screen. */
@@ -250,6 +260,7 @@ export function preserveScroll(fn: () => void) {
     const a = heldAnchor;
     heldAnchor = null;
     // Preact renders in a microtask; rAF runs after it and before paint.
+    holdUntil = performance.now() + 120;
     requestAnimationFrame(() => {
       restoreAnchor(a);
       // Lazily mounted chunks may settle one frame later.
@@ -272,14 +283,20 @@ function indexThreads() {
   S.threadsByPath = by;
 }
 
-export function defaultCollapsed(f: DiffFile): boolean {
+function colMap(): Map<string, boolean> {
+  let m = S.collapsed.get(S.scope);
+  if (!m) S.collapsed.set(S.scope, (m = new Map()));
+  return m;
+}
+
+export function defaultCollapsed(f: DiffFileMeta): boolean {
   if (f.viewed) return true;
   if (f.status === 'deleted' && f.deletions > 400) return true;
   return false;
 }
 
-export function isCollapsed(f: DiffFile): boolean {
-  return S.collapsed.get(fk(f.path)) ?? defaultCollapsed(f);
+export function isCollapsed(f: DiffFileMeta): boolean {
+  return colMap().get(f.path) ?? defaultCollapsed(f);
 }
 
 /** Orders paths like the file tree: directories before files at each level. */
@@ -298,10 +315,12 @@ export function treeCompare(a: string, b: string): number {
 }
 
 /** Text of one line from the diff hunks or the loaded content, if known. */
-export function lineTextAt(f: DiffFile, side: Side, line: number): string | null {
-  for (const h of f.hunks)
+export function lineTextAt(meta: DiffFileMeta, side: Side, line: number): string | null {
+  const f = getDiff(meta.path);
+  if (f)
+    for (const h of f.hunks)
     for (const l of h.lines) if ((side === 'old' ? l.oldLine : l.newLine) === line && (side === 'old' ? l.type !== 'add' : l.type !== 'del')) return l.text;
-  const c = S.contents.get(fk(f.path));
+  const c = S.contents.get(fk(meta.path));
   const arr = c ? (side === 'old' ? c.old : c.new) : null;
   return arr?.[line - 1] ?? null;
 }
@@ -330,9 +349,14 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
   const prevFiles = S.fileByPath;
   const changedTopics: string[] = [];
   const flashed: string[] = [];
-  const files: DiffFile[] = [];
-  const byPath = new Map<string, DiffFile>();
+  const files: DiffFileMeta[] = [];
+  const byPath = new Map<string, DiffFileMeta>();
+  const scope = next.scope ?? S.scope;
   for (const nf of next.files) {
+    // Older servers send hunks inline; use them as a preloaded cache.
+    if ('hunks' in nf && Array.isArray((nf as DiffFile).hunks)) {
+      S.hunks.set(fk(nf.path, scope), nf as DiffFile);
+    }
     const old = prevFiles.get(nf.path);
     if (!opts.initial && old && old.fingerprint === nf.fingerprint) {
       if (old.viewed !== nf.viewed || old.changedSinceViewed !== nf.changedSinceViewed) {
@@ -346,11 +370,10 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
       files.push(nf);
       byPath.set(nf.path, nf);
       changedTopics.push(fileTopic(nf.path));
+      // A viewed file that changed is no longer viewed: show it again.
+      if (old && old.viewed && nf.changedSinceViewed) colMap().delete(nf.path);
       if (old && opts.flash) flashed.push(nf.path);
-      if (old && old.fingerprint !== nf.fingerprint) {
-        S.since.delete(fk(nf.path));
-        shiftComposers(nf);
-      }
+      if (old && old.fingerprint !== nf.fingerprint) S.since.delete(fk(nf.path));
     }
   }
   files.sort((a, b) => treeCompare(a.path, b.path));
@@ -386,7 +409,7 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
       emit(fileTopic(p), 'tree');
     }, 2400);
   }
-  emit(...changedTopics, 'review', 'threads', 'agents', 'progress', 'tree', 'ui');
+  emit(...changedTopics, 'review', 'threads', 'agents', 'progress', 'tree', 'ui', 'vspace');
   if (listChanged) emit('files');
 }
 
@@ -534,8 +557,8 @@ function handleEvent(ev: ServerEvent) {
         preserveScroll(() => {
           f.viewed = ev.viewed;
           if (ev.viewed) f.changedSinceViewed = false;
-          S.collapsed.set(fk(f.path), ev.viewed);
-          emit(fileTopic(f.path), 'progress', 'tree');
+          colMap().set(f.path, ev.viewed);
+          emit(fileTopic(f.path), 'progress', 'tree', 'vspace');
         });
       }
       break;
@@ -784,23 +807,23 @@ export function setSelection(sel: Selection | null) {
 
 export function setCollapsed(path: string, collapsed: boolean) {
   preserveScroll(() => {
-    S.collapsed.set(fk(path), collapsed);
-    emit(fileTopic(path), 'tree');
+    colMap().set(path, collapsed);
+    emit(fileTopic(path), 'tree', 'vspace');
   });
 }
 
 export async function setViewed(path: string, viewed: boolean) {
   const f = S.fileByPath.get(path);
   if (!f) return;
-  const prev = { viewed: f.viewed, changed: f.changedSinceViewed, collapsed: S.collapsed.get(fk(path)) };
+  const prev = { viewed: f.viewed, changed: f.changedSinceViewed, collapsed: colMap().get(path) };
   const card = findCard(path);
   const sc = S.scroller;
   const cardAbove = card && sc ? card.getBoundingClientRect().top < sc.getBoundingClientRect().top : false;
   f.viewed = viewed;
   if (viewed) f.changedSinceViewed = false;
-  S.collapsed.set(fk(path), viewed);
+  colMap().set(path, viewed);
   if (viewed) S.since.delete(fk(path));
-  emit(fileTopic(path), 'progress', 'tree');
+  emit(fileTopic(path), 'progress', 'tree', 'vspace');
   if (viewed && cardAbove) {
     // The reader was inside this file: keep the collapsed header at the top.
     requestAnimationFrame(() => {
@@ -813,9 +836,9 @@ export async function setViewed(path: string, viewed: boolean) {
   if (!ok && scope === S.scope) {
     f.viewed = prev.viewed;
     f.changedSinceViewed = prev.changed;
-    if (prev.collapsed === undefined) S.collapsed.delete(fk(path));
-    else S.collapsed.set(fk(path), prev.collapsed);
-    emit(fileTopic(path), 'progress', 'tree');
+    if (prev.collapsed === undefined) colMap().delete(path);
+    else colMap().set(path, prev.collapsed);
+    emit(fileTopic(path), 'progress', 'tree', 'vspace');
   }
 }
 
@@ -873,9 +896,9 @@ export async function expandGap(path: string, gapId: string, dir: 'up' | 'down' 
 
 // ------------------------------------------------------------------ content & highlighting
 
-export function getContent(f: DiffFile): Content | undefined {
-  const c = S.contents.get(fk(f.path));
-  return c && c.fp === f.fingerprint ? c : undefined;
+export function getContent(f: DiffFileMeta): Content | undefined {
+  // May be from an older fingerprint; row rendering checks each line's text before using it.
+  return S.contents.get(fk(f.path));
 }
 
 function splitLines(text: string): string[] {
@@ -888,7 +911,7 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-const MAX_HL = 1_500_000;
+const MAX_HL = 1_000_000;
 let active = 0;
 const waiting: (() => void)[] = [];
 async function slot<T>(fn: () => Promise<T>): Promise<T> {
@@ -902,46 +925,186 @@ async function slot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Minified or generated text: highlighting costs much and helps little. */
+function skipHighlight(lines: string[], size: number): boolean {
+  if (size > MAX_HL) return true;
+  if (!lines.length) return true;
+  if (size / lines.length > 300) return true;
+  for (const l of lines) if (l.length > 4000) return true;
+  return false;
+}
+
+interface Fetching {
+  fp: string;
+  jobs: number[];
+}
+const fetching = new Map<string, Fetching>();
+
+/** Loads both sides' text and highlights them in the worker. Safe to call often. */
 export async function ensureContent(path: string): Promise<void> {
   const f = S.fileByPath.get(path);
   if (!f || f.binary || f.tooLarge) return;
   const key = fk(path);
   const have = S.contents.get(key);
-  if (have && have.fp === f.fingerprint) return;
-  const c: Content = { fp: f.fingerprint, old: null, new: null, oldHl: null, newHl: null, loading: true, ver: 0 };
-  S.contents.set(key, c);
+  const busy = fetching.get(key);
+  if (busy && busy.fp === f.fingerprint) return;
+  if (have && have.fp === f.fingerprint) {
+    if (have.hlDone) return;
+    void highlightContent(path, have);
+    return;
+  }
+  const mark: Fetching = { fp: f.fingerprint, jobs: [] };
+  fetching.set(key, mark);
   const scope = S.scope;
-  const fetchSide = (side: Side) =>
-    slot(() => api.file(S.reviewId, scope, path, side)).catch(() => null);
+  const fetchSide = (side: Side) => slot(() => api.file(S.reviewId, scope, path, side)).catch(() => null);
   const [o, n] = await Promise.all([
     f.status !== 'added' ? fetchSide('old') : Promise.resolve(null),
     f.status !== 'deleted' ? fetchSide('new') : Promise.resolve(null),
   ]);
-  if (S.contents.get(key) !== c) return;
-  c.old = o && o.exists && !o.binary ? splitLines(o.text) : null;
-  c.new = n && n.exists && !n.binary ? splitLines(n.text) : null;
-  c.loading = false;
-  c.ver++;
+  if (fetching.get(key) !== mark) return;
+  fetching.delete(key);
+  const c: Content = {
+    fp: f.fingerprint,
+    old: o && o.exists && !o.binary ? splitLines(o.text) : null,
+    new: n && n.exists && !n.binary ? splitLines(n.text) : null,
+    oldHl: null,
+    newHl: null,
+    loading: false,
+    ver: (have?.ver ?? 0) + 1,
+    hlDone: false,
+  };
+  // Keep the old highlight for lines that did not change, until the new one arrives.
+  if (have) {
+    c.oldHl = have.oldHl;
+    c.newHl = have.newHl;
+    c.staleOld = have.old;
+    c.staleNew = have.new;
+  }
+  S.contents.set(key, c);
   emit(fileTopic(path));
+  void highlightContent(path, c);
+}
+
+const hlJobs = new Map<string, number[]>();
+
+async function highlightContent(path: string, c: Content) {
+  const key = fk(path);
+  if (hlJobs.has(key)) return;
   const lang = langForPath(path);
-  if (!lang) return;
-  const jobs: Promise<void>[] = [];
-  if (c.old && o!.text.length < MAX_HL)
-    jobs.push(
-      highlightText(c.old.join('\n'), lang).then((h) => {
-        if (h && h.length >= c.old!.length) c.oldHl = h;
-      }),
-    );
-  if (c.new && n!.text.length < MAX_HL)
-    jobs.push(
-      highlightText(c.new.join('\n'), lang).then((h) => {
-        if (h && h.length >= c.new!.length) c.newHl = h;
-      }),
-    );
-  await Promise.all(jobs);
-  if (S.contents.get(key) !== c) return;
+  if (!lang) {
+    c.hlDone = true;
+    return;
+  }
+  const ids: number[] = [];
+  hlJobs.set(key, ids);
+  let wasCancelled = false;
+  const run = async (lines: string[] | null): Promise<string[] | null> => {
+    if (!lines) return null;
+    const text = lines.join('\n');
+    if (skipHighlight(lines, text.length)) return null;
+    const job = highlightText(text, lang);
+    ids.push(job.id);
+    const h = await job.done;
+    if (h === 'cancelled') {
+      wasCancelled = true;
+      return null;
+    }
+    return h && h.length >= lines.length ? h : null;
+  };
+  const [oh, nh] = await Promise.all([run(c.old), run(c.new)]);
+  // Cancelled: the file left the viewport. It retries when it comes back.
+  if (wasCancelled || S.contents.get(key) !== c) return;
+  if (hlJobs.get(key) === ids) hlJobs.delete(key);
+  c.oldHl = oh;
+  c.newHl = nh;
+  c.staleOld = null;
+  c.staleNew = null;
+  c.hlDone = true;
   c.ver++;
   emit(fileTopic(path));
+}
+
+/** The file left the viewport: drop its queued highlight work. */
+export function releaseContent(path: string) {
+  const key = fk(path);
+  const ids = hlJobs.get(key);
+  if (!ids) return;
+  hlJobs.delete(key);
+  for (const id of ids) cancelHighlight(id);
+}
+
+// ------------------------------------------------------------------ hunks
+
+/** Hunks for the current scope, if loaded and still current. */
+export function getDiff(path: string): DiffFile | undefined {
+  const meta = S.fileByPath.get(path);
+  const d = S.hunks.get(fk(path));
+  if (!meta || !d) return undefined;
+  return d.fingerprint === meta.fingerprint ? d : undefined;
+}
+
+/** The last loaded hunks even when stale; shown while fresh ones load. */
+export function getStaleDiff(path: string): DiffFile | undefined {
+  return S.hunks.get(fk(path));
+}
+
+export function needsHunks(f: DiffFileMeta): boolean {
+  if (f.binary || f.tooLarge) return false;
+  return !getDiff(f.path);
+}
+
+const wanted = new Set<string>();
+const inflight = new Map<string, string>(); // fk -> fingerprint requested
+let hunkTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Queues hunk loads. Requests are batched (<= 200 paths) and sent together. */
+export function requestHunks(paths: string[], urgent = false) {
+  for (const p of paths) {
+    const f = S.fileByPath.get(p);
+    if (!f || !needsHunks(f)) continue;
+    if (inflight.get(fk(p)) === f.fingerprint) continue;
+    wanted.add(p);
+  }
+  if (!wanted.size) return;
+  if (hunkTimer) clearTimeout(hunkTimer);
+  hunkTimer = setTimeout(flushHunks, urgent ? 0 : 60);
+}
+
+function flushHunks() {
+  hunkTimer = null;
+  const scope = S.scope;
+  const paths = [...wanted];
+  wanted.clear();
+  for (let i = 0; i < paths.length; i += 200) {
+    const batch = paths.slice(i, i + 200);
+    for (const p of batch) inflight.set(fk(p, scope), S.fileByPath.get(p)?.fingerprint ?? '');
+    api
+      .hunks(S.reviewId, scope, batch)
+      .then((list) => receiveHunks(list, scope, batch))
+      .catch((e: Error) => {
+        for (const p of batch) inflight.delete(fk(p, scope));
+        pushToast({ kind: 'error', text: `Loading diff failed: ${e.message}` });
+      });
+  }
+}
+
+function receiveHunks(list: DiffFile[], scope: ReviewScope, asked: string[]) {
+  for (const p of asked) inflight.delete(fk(p, scope));
+  if (scope !== S.scope) {
+    for (const d of list) S.hunks.set(fk(d.path, scope), d);
+    return;
+  }
+  const topics: string[] = [];
+  preserveScroll(() => {
+    for (const d of list) {
+      const key = fk(d.path, scope);
+      const prev = S.hunks.get(key);
+      S.hunks.set(key, d);
+      if (prev && prev.fingerprint !== d.fingerprint) shiftComposers(d);
+      topics.push(fileTopic(d.path));
+    }
+    emit(...topics);
+  });
 }
 
 // ------------------------------------------------------------------ navigation
@@ -952,14 +1115,15 @@ export function setCurrent(path: string | null) {
   emit('current');
 }
 
+/** Navigation hooks, installed by the virtual list. */
+export const nav = {
+  toFile: (_path: string, _opts?: { instant?: boolean }) => {},
+  /** Scroll position of a file's top relative to the scroller, from the layout model. */
+  fileTop: (_path: string): number | null => null,
+};
+
 export function scrollToFile(path: string, opts: { instant?: boolean } = {}) {
-  const card = findCard(path);
-  const sc = S.scroller;
-  if (!card || !sc) return;
-  sc.scrollTo({
-    top: sc.scrollTop + card.getBoundingClientRect().top - sc.getBoundingClientRect().top,
-    behavior: opts.instant ? 'instant' : 'auto',
-  });
+  nav.toFile(path, opts);
   setCurrent(path);
 }
 
@@ -977,7 +1141,7 @@ export function jumpToThread(id: number) {
     if (!t2) return;
     const f = S.fileByPath.get(t2.anchor.path);
     if (f && isCollapsed(f)) {
-      S.collapsed.set(fk(f.path), false);
+      colMap().set(f.path, false);
       emit(fileTopic(f.path), 'tree');
     }
     if (t2.resolved && !S.openResolved.has(id)) {
@@ -993,9 +1157,10 @@ export function jumpToThread(id: number) {
         flashElement(el);
         markRead(id);
       } else if (n > 0) requestAnimationFrame(() => tryScroll(n - 1));
-      else if (f) scrollToFile(f.path);
     };
-    requestAnimationFrame(() => tryScroll(10));
+    // The file may be far away and not loaded: go there first, then find the thread.
+    if (f && !S.scroller?.querySelector(`[data-thread="${id}"]`)) scrollToFile(f.path, { instant: true });
+    requestAnimationFrame(() => tryScroll(120));
   };
   if (t.inScope === false && t.homeScope && t.homeScope !== S.scope) {
     setScope(t.homeScope, { then: () => setTimeout(go, 50) });

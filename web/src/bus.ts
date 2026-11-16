@@ -4,7 +4,11 @@ import { useEffect, useReducer } from 'preact/hooks';
 const subs = new Map<string, Set<() => void>>();
 let pending: Set<string> | null = null;
 
+/** Synchronous listeners for every emit (used to invalidate cached layout). */
+export const emitHooks: ((topic: string) => void)[] = [];
+
 export function emit(...topics: string[]) {
+  for (const h of emitHooks) for (const t of topics) h(t);
   if (!pending) {
     pending = new Set();
     queueMicrotask(flush);

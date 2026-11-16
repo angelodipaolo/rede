@@ -6,7 +6,8 @@
  * deterministic generated fixture. Plain Node 22 ESM, node:http only, no dependencies.
  *
  * Usage:
- *   node web/dev/mock-server.mjs [--port 4319] [--files 300] [--small] [--seed 42]
+ *   node web/dev/mock-server.mjs [--port 4319] [--files 300] [--small] [--scale] [--seed 42]
+ *   --scale: ~1500 files, about +13k/-9k lines (light edits per file).
  *                                [--no-agent] [--change-every <seconds>]
  *
  * Mock-only endpoints (all POST, optional ?review=<id>, default "working"):
@@ -30,6 +31,7 @@ function parseArgs(argv) {
     seed: 42,
     agent: true,
     changeEvery: 0,
+    scale: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -41,11 +43,15 @@ function parseArgs(argv) {
     if (a === '--port') o.port = Number(next());
     else if (a === '--files') o.files = Math.max(1, Number(next()) | 0);
     else if (a === '--small') o.small = true;
+    else if (a === '--scale') {
+      o.scale = true;
+      o.files = 1500;
+    }
     else if (a === '--seed') o.seed = Number(next()) | 0;
     else if (a === '--no-agent') o.agent = false;
     else if (a === '--change-every') o.changeEvery = Number(next());
     else if (a === '--help' || a === '-h') {
-      console.log('node web/dev/mock-server.mjs [--port 4319] [--files 300] [--small] [--seed 42] [--no-agent] [--change-every <s>]');
+      console.log('node web/dev/mock-server.mjs [--port 4319] [--files 300] [--small] [--scale] [--seed 42] [--no-agent] [--change-every <s>]');
       process.exit(0);
     } else throw new Error(`unknown argument ${a}`);
   }
@@ -686,7 +692,7 @@ function entry(e) {
   return { binary: false, tooLarge: false, oldPath: undefined, ...e, diffs: {} };
 }
 
-function buildFixture(seed, nFiles, small) {
+function buildFixture(seed, nFiles, small, scale = false) {
   const r = new Rng(seed);
   const used = new Set();
   const out = [];
@@ -746,7 +752,7 @@ function buildFixture(seed, nFiles, small) {
       add({ path: freshPath(lang), lang, head: t, index: t, work: null }); // unstaged deletion
     }
   }
-  const addedSizes = small ? [60] : [45, 160, 420, 1200];
+  const addedSizes = small ? [60] : scale ? [45, 160, 420] : [45, 160, 420, 1200];
   addedSizes.forEach((size, i) => {
     const lang = ['ts', 'tsx', 'go', 'md'][i % 4];
     const t = join(genLines(lang, r, size), i !== 1);
@@ -770,7 +776,7 @@ function buildFixture(seed, nFiles, small) {
   }
 
   // Large changes (1000-3000 changed lines each).
-  const bigKinds = small ? ['insert'] : ['insert', 'replace', 'delete', 'many', 'top'];
+  const bigKinds = small ? ['insert'] : scale ? ['replace', 'delete', 'many'] : ['insert', 'replace', 'delete', 'many', 'top'];
   for (const kind of bigKinds) {
     const lang = r.pick(['ts', 'tsx', 'go', 'py', 'rs']);
     const s = small ? 0.2 : 1;
@@ -791,8 +797,10 @@ function buildFixture(seed, nFiles, small) {
   // Everything else: small edits.
   while (out.length < (small ? 12 : nFiles)) {
     const lang = r.weighted(LANG_WEIGHTS);
-    const size = r.weighted([[r.int(30, 250), 6], [r.int(250, 800), 3], [r.int(800, 1500), 1]]);
-    const edits = r.chance(0.15) ? r.int(6, 16) : r.int(2, 7);
+    const size = scale
+      ? r.weighted([[r.int(20, 150), 7], [r.int(150, 500), 3]])
+      : r.weighted([[r.int(30, 250), 6], [r.int(250, 800), 3], [r.int(800, 1500), 1]]);
+    const edits = scale ? (r.chance(0.2) ? 2 : 1) : r.chance(0.15) ? r.int(6, 16) : r.int(2, 7);
     modified(lang, size, edits);
   }
   return out;
@@ -1294,6 +1302,12 @@ function fileView(rv, e, scope) {
   return { ...d, viewed, changedSinceViewed: !!v && !viewed };
 }
 
+/** DiffFileMeta: the file view without hunks. */
+function fileMeta(rv, e, scope) {
+  const { hunks, ...meta } = fileView(rv, e, scope);
+  return meta;
+}
+
 function touch(rv) {
   rv.updatedAt = nowIso();
 }
@@ -1325,7 +1339,7 @@ function reviewView(rv, scope) {
     scopeFileCounts,
     resolved: rv.resolved,
     diffFingerprint: diffFingerprint(rv, scope),
-    files: scopeFiles(rv, scope).map((e) => fileView(rv, e, scope)),
+    files: scopeFiles(rv, scope).map((e) => fileMeta(rv, e, scope)),
     threads: ts.map((t) => threadView(t, scope)),
     agents: presence,
   };
@@ -1501,6 +1515,14 @@ function deleteThread(t) {
   const holder = t.claimedBy;
   if (holder && !holdsThreads(holder) && presence.some((p) => p.name === holder)) setPresence(holder, 'waiting');
   broadcast(t.reviewId, { type: 'thread-deleted', threadId: t.id });
+}
+
+/** Optional ?scope= on thread endpoints; default is the thread's home scope. */
+function threadScope(t, q) {
+  const s = q.get('scope');
+  if (!s) return t.homeScope;
+  if (!SCOPES.includes(s)) throw new HttpError(400, `invalid scope: ${s}`);
+  return s;
 }
 
 function getThread(id) {
@@ -1909,6 +1931,25 @@ async function route(req, res) {
     return send(res, 200, reviewView(rv, scopeParam(rv, q)));
   }
 
+  if ((m = p.match(/^\/api\/reviews\/([^/]+)\/hunks$/))) {
+    if (M !== 'POST') throw new HttpError(405, 'method not allowed');
+    const rv = getReview(decodeURIComponent(m[1]));
+    const scope = scopeParam(rv, q);
+    const body = await readJson(req);
+    if (!Array.isArray(body.paths) || !body.paths.every((x) => typeof x === 'string')) throw new HttpError(400, 'paths must be a string array');
+    if (body.paths.length > 200) throw new HttpError(400, 'at most 200 paths per request');
+    const out = [];
+    const seen = new Set();
+    for (const path of body.paths) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const e = findEntry(rv, path);
+      if (!e || !inScopeEntry(e, scope) || diffOf(e, scope).path !== path) continue;
+      out.push(fileView(rv, e, scope));
+    }
+    return send(res, 200, out);
+  }
+
   if ((m = p.match(/^\/api\/reviews\/([^/]+)\/file$/))) {
     if (M !== 'GET') throw new HttpError(405, 'method not allowed');
     const rv = getReview(decodeURIComponent(m[1]));
@@ -2006,7 +2047,7 @@ async function route(req, res) {
 
   if ((m = p.match(/^\/api\/threads\/(\d+)$/))) {
     const t = getThread(m[1]);
-    const scope = q.get('scope') && SCOPES.includes(q.get('scope')) ? q.get('scope') : 'all';
+    const scope = threadScope(t, q);
     if (M === 'GET') return send(res, 200, threadView(t, scope));
     if (M === 'PATCH') {
       const body = await readJson(req);
@@ -2040,6 +2081,7 @@ async function route(req, res) {
   if ((m = p.match(/^\/api\/threads\/(\d+)\/messages$/))) {
     if (M !== 'POST') throw new HttpError(405, 'method not allowed');
     const t = getThread(m[1]);
+    const scope = threadScope(t, q);
     const body = await readJson(req);
     validBody(body.body);
     const author = validAuthor(body.author);
@@ -2052,7 +2094,7 @@ async function route(req, res) {
     touch(reviews.get(t.reviewId));
     broadcastThread(t);
     afterHumanMessage(t, author);
-    return send(res, 200, threadView(t, 'all'));
+    return send(res, 200, threadView(t, scope));
   }
 
   if ((m = p.match(/^\/api\/messages\/(\d+)$/))) {
@@ -2061,6 +2103,7 @@ async function route(req, res) {
     if (tid === undefined) throw new HttpError(404, `message not found: ${mid}`);
     const t = getThread(tid);
     const i = t.messages.findIndex((x) => x.id === mid);
+    const scope = threadScope(t, q);
     if (M === 'PATCH') {
       const body = await readJson(req);
       validBody(body.body);
@@ -2068,7 +2111,7 @@ async function route(req, res) {
       t.messages[i].editedAt = nowIso();
       t.updatedAt = t.messages[i].editedAt;
       broadcastThread(t);
-      return send(res, 200, threadView(t, 'all'));
+      return send(res, 200, threadView(t, scope));
     }
     if (M === 'DELETE') {
       t.messages.splice(i, 1);
@@ -2080,7 +2123,7 @@ async function route(req, res) {
       if (t.agentState !== 'working') recomputeAgentState(t);
       t.updatedAt = nowIso();
       broadcastThread(t);
-      return send(res, 200, threadView(t, 'all'));
+      return send(res, 200, threadView(t, scope));
     }
     throw new HttpError(405, 'method not allowed');
   }
@@ -2196,7 +2239,7 @@ async function route(req, res) {
 // ------------------------------------------------------------------ start
 
 const t0 = performance.now();
-baseEntries = buildFixture(OPTS.seed, OPTS.files, OPTS.small);
+baseEntries = buildFixture(OPTS.seed, OPTS.files, OPTS.small, OPTS.scale);
 const working = makeReview({ kind: 'working' });
 for (const s of SCOPES) for (const e of scopeFiles(working, s)) diffOf(e, s);
 seedThreads(working);

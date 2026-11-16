@@ -4,6 +4,7 @@ import {
   cycleScope,
   isCollapsed,
   jumpToThread,
+  nav,
   orderedOpenThreads,
   S,
   scrollToFile,
@@ -26,8 +27,8 @@ function moveFile(dir: 1 | -1) {
   const sc = S.scroller;
   if (dir === -1 && i >= 0 && sc) {
     // Inside a file: go to its own header first.
-    const card = sc.querySelector<HTMLElement>(`[data-path="${CSS.escape(files[i]!.path)}"]`);
-    if (card && card.getBoundingClientRect().top < sc.getBoundingClientRect().top - 2) {
+    const top = nav.fileTop(files[i]!.path);
+    if (top !== null && top < -2) {
       scrollToFile(files[i]!.path);
       return;
     }
@@ -44,8 +45,8 @@ function moveThread(dir: 1 | -1) {
   const pos = list.map((t) => {
     const el = S.scroller!.querySelector<HTMLElement>(`[data-thread="${t.id}"]`);
     if (el) return el.getBoundingClientRect().top;
-    const card = S.scroller!.querySelector<HTMLElement>(`[data-path="${CSS.escape(t.anchor.path)}"]`);
-    return card ? card.getBoundingClientRect().top + 1 : 0;
+    const top = nav.fileTop(t.anchor.path);
+    return top === null ? -1e9 : sTop + top + 1;
   });
   let target = -1;
   if (dir === 1) target = pos.findIndex((y) => y > marker);

@@ -1,6 +1,6 @@
 import { memo } from 'preact/compat';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { DiffFile } from '../../../src/shared/types.ts';
+import type { DiffFileMeta as DiffFile } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
 import { S, scrollToFile, setCollapsed, isCollapsed, setSidebar } from '../store.ts';
 import { fuzzy } from '../util.ts';
@@ -67,13 +67,8 @@ interface RowProps {
 }
 
 const FileRow = memo(function FileRow(p: RowProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (p.active && ref.current && !ref.current.closest('.tree:hover')) ref.current.scrollIntoView({ block: 'nearest' });
-  }, [p.active]);
   return (
     <div
-      ref={ref}
       class={`tf${p.active ? ' active' : ''}${p.viewed ? ' viewed' : ''}${p.flash ? ' flash' : ''}`}
       style={{ paddingLeft: 8 + p.depth * 12 }}
       title={p.path}
@@ -101,13 +96,55 @@ const FileRow = memo(function FileRow(p: RowProps) {
   );
 });
 
+type Flat = { d: TNode; depth: number; closed: boolean } | { f: DiffFile; depth: number };
+
+const ROW_H = 24;
+
 export function Sidebar() {
   useTopics('files', 'tree', 'threads', 'progress', 'current', 'layout', 'filter');
   const [closedDirs, setClosedDirs] = useState<Set<string>>(new Set());
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewH, setViewH] = useState(800);
+  const treeRef = useRef<HTMLDivElement>(null);
   const files = S.files;
   const q = S.filter.trim();
   const shown = useMemo(() => (q ? files.filter((f) => fuzzy(q, f.path) >= 0) : files), [files, q]);
   const tree = useMemo(() => buildTree(shown), [shown]);
+
+  const flat = useMemo(() => {
+    const out: Flat[] = [];
+    const walk = (n: TNode, depth: number) => {
+      for (const d of n.dirs) {
+        const closed = !q && closedDirs.has(d.key);
+        out.push({ d, depth, closed });
+        if (!closed) walk(d, depth + 1);
+      }
+      for (const f of n.files) out.push({ f, depth });
+    };
+    walk(tree, 0);
+    return out;
+  }, [tree, closedDirs, q]);
+
+  const activeIdx = useMemo(() => flat.findIndex((r) => 'f' in r && r.f.path === S.current), [flat, S.current]);
+
+  // Keep the current file visible in the tree, unless the pointer is in the tree.
+  useEffect(() => {
+    const el = treeRef.current;
+    if (!el || activeIdx < 0 || el.matches(':hover')) return;
+    const y = activeIdx * ROW_H;
+    if (y < el.scrollTop) el.scrollTop = y;
+    else if (y + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = y + ROW_H - el.clientHeight;
+  }, [activeIdx]);
+
+  useEffect(() => {
+    const el = treeRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewH(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [S.sidebarHidden]);
+
+  if (S.sidebarHidden) return null;
 
   const counts = new Map<string, { total: number; open: number; unread: boolean }>();
   for (const t of S.threads.values()) {
@@ -119,29 +156,31 @@ export function Sidebar() {
     counts.set(t.anchor.path, c);
   }
 
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - 15);
+  const end = Math.min(flat.length, Math.ceil((scrollTop + viewH) / ROW_H) + 15);
   const rows: preact.ComponentChildren[] = [];
-  const walk = (n: TNode, depth: number) => {
-    for (const d of n.dirs) {
-      const closed = !q && closedDirs.has(d.key);
+  for (let i = start; i < end; i++) {
+    const r = flat[i]!;
+    if ('d' in r) {
+      const d = r.d;
       rows.push(
         <div
           key={`d:${d.key}`}
           class="td"
-          style={{ paddingLeft: 8 + depth * 12 }}
+          style={{ paddingLeft: 8 + r.depth * 12 }}
           onClick={() => {
             const next = new Set(closedDirs);
-            if (closed) next.delete(d.key);
+            if (r.closed) next.delete(d.key);
             else next.add(d.key);
             setClosedDirs(next);
           }}
         >
-          <Icon name={closed ? 'right' : 'downchev'} size={12} />
+          <Icon name={r.closed ? 'right' : 'downchev'} size={12} />
           <span class="dname">{d.name}</span>
         </div>,
       );
-      if (!closed) walk(d, depth + 1);
-    }
-    for (const f of n.files) {
+    } else {
+      const f = r.f;
       const c = counts.get(f.path);
       rows.push(
         <FileRow
@@ -156,16 +195,14 @@ export function Sidebar() {
           total={c?.total ?? 0}
           open={c?.open ?? 0}
           unread={c?.unread ?? false}
-          active={S.current === f.path}
+          active={i === activeIdx}
           flash={S.flash.has(f.path)}
-          depth={depth}
+          depth={r.depth}
         />,
       );
     }
-  };
-  walk(tree, 0);
+  }
 
-  if (S.sidebarHidden) return null;
   return (
     <aside class="sidebar" style={{ width: S.sidebarW }}>
       <div class="filter">
@@ -194,8 +231,17 @@ export function Sidebar() {
         />
         {q && <span class="fcount">{shown.length}</span>}
       </div>
-      <div class="tree">
-        {rows}
+      <div
+        class="tree"
+        ref={treeRef}
+        onScroll={(e) => {
+          const t = (e.target as HTMLElement).scrollTop;
+          if (Math.abs(t - scrollTop) >= ROW_H * 5) setScrollTop(t);
+        }}
+      >
+        <div style={{ height: flat.length * ROW_H, position: 'relative' }}>
+          <div style={{ position: 'absolute', top: start * ROW_H, left: 0, right: 0 }}>{rows}</div>
+        </div>
         {files.length > 0 && shown.length === 0 && <div class="tree-empty">No file matches “{q}”.</div>}
       </div>
       <Resizer />

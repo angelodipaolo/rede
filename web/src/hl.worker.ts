@@ -53,6 +53,7 @@ export interface HlRequest {
 export interface HlResponse {
   id: number;
   lines: string[] | null;
+  cancelled?: boolean;
 }
 
 // LIFO: the most recent request is usually the file the reader is looking at now.
@@ -87,7 +88,13 @@ function schedule() {
   setTimeout(pump, 0);
 }
 
-self.onmessage = (e: MessageEvent<HlRequest>) => {
+self.onmessage = (e: MessageEvent<HlRequest | { cancel: number }>) => {
+  if ('cancel' in e.data) {
+    const id = e.data.cancel;
+    const i = queue.findIndex((q) => q.id === id);
+    if (i >= 0) queue.splice(i, 1);
+    return;
+  }
   queue.push(e.data);
   schedule();
 };

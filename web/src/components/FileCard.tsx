@@ -1,9 +1,10 @@
 import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { DiffFile, Side, Thread } from '../../../src/shared/types.ts';
+import type { DiffFileMeta, Side, Thread } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
 import { escapeHtml, markRanges } from '../htmlLines.ts';
 import { nearViewport, observe } from '../io.ts';
+import { estimate } from '../vlist.ts';
 import {
   buildModel,
   CHUNK,
@@ -24,7 +25,11 @@ import {
   expandGap,
   fileTopic,
   getContent,
+  getDiff,
   getExpansion,
+  getStaleDiff,
+  releaseContent,
+  requestHunks,
   getSince,
   isCollapsed,
   S,
@@ -243,7 +248,7 @@ function splitPath(p: string): [string, string] {
   return i < 0 ? ['', p] : [p.slice(0, i + 1), p.slice(i + 1)];
 }
 
-function FileHeader({ f, collapsed, sinceOn, unresolved, total }: { f: DiffFile; collapsed: boolean; sinceOn: boolean; unresolved: number; total: number }) {
+function FileHeader({ f, collapsed, sinceOn, unresolved, total }: { f: DiffFileMeta; collapsed: boolean; sinceOn: boolean; unresolved: number; total: number }) {
   const [copied, setCopied] = useState(false);
   const [dir, base] = splitPath(f.path);
   const st = STATUS[f.status]!;
@@ -313,17 +318,23 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const collapsed = f ? isCollapsed(f) : true;
 
+  const diff = getDiff(path) ?? getStaleDiff(path);
+  const hasDiff = !!diff;
+
+  // Mounted means near the viewport: load text for highlighting and context.
   useEffect(() => {
-    const el = cardRef.current;
-    if (!el || collapsed) return;
-    return observe(el, '900px 0px', (v) => {
-      if (v) void ensureContent(path);
-    });
-  }, [path, collapsed, f?.fingerprint]);
+    if (!f || collapsed) return;
+    if (!hasDiff) {
+      requestHunks([path], true);
+      return;
+    }
+    void ensureContent(path);
+    return () => releaseContent(path);
+  }, [path, collapsed, f?.fingerprint, hasDiff]);
 
   const since = getSince(path);
   const sinceOn = since?.state === 'ready' && !!since.file;
-  const shown = sinceOn ? since!.file! : f;
+  const shown = sinceOn ? since!.file! : diff;
   const content = f ? getContent(f) : undefined;
   const ctx = content ? content.new ?? content.old : null;
   const exp = getExpansion(path);
@@ -333,14 +344,24 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
     [shown, expKey, ctx, sinceOn],
   );
 
-  if (!f || !shown || !model) return null;
+  if (!f) return null;
 
   const view = S.view;
   const threads = S.threadsByPath.get(path) ?? [];
   const unresolved = threads.filter((t) => !t.resolved).length;
 
   let body: preact.ComponentChildren = null;
-  if (!collapsed) {
+  if (!collapsed && (f.binary || f.tooLarge)) {
+    body = (
+      <div class="fb">
+        <div class="ph-note">
+          {f.binary ? 'Binary file. Not shown.' : `Diff too large to display (+${f.additions} −${f.deletions}).`}
+        </div>
+      </div>
+    );
+  } else if (!collapsed && (!shown || !model)) {
+    body = <div class="fb skel" style={{ height: Math.max(40, estimate(f) - 48) }} />;
+  } else if (!collapsed && shown && model) {
     const rows: Row[] = view === 'split' ? model.split : model.unified;
     const index = view === 'split' ? model.sIndex : model.uIndex;
     const attach = new Map<number, Attach[]>();
@@ -419,14 +440,7 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
     flush(rows.length);
 
     let placeholder: preact.ComponentChildren = null;
-    if (f.binary) placeholder = <div class="ph-note">Binary file. Not shown.</div>;
-    else if (f.tooLarge)
-      placeholder = (
-        <div class="ph-note">
-          Diff too large to display (+{f.additions} −{f.deletions}).
-        </div>
-      );
-    else if (!shown.hunks.length)
+    if (!shown.hunks.length)
       placeholder = <div class="ph-note">{f.status === 'renamed' ? 'File renamed without changes.' : 'No content changes.'}</div>;
 
     body = (
