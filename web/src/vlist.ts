@@ -23,6 +23,9 @@ export const V = {
   index: new Map<string, number>(),
   anchorPath: null as string | null,
   anchorTop: 0,
+  /** First mounted file and its top as rendered: the height of the spacer above the window. */
+  spacerPath: null as string | null,
+  spacerTop: 0,
 };
 
 const rowCache = new Map<string, number>();
@@ -176,6 +179,20 @@ export function layout() {
   }
   V.tops[n] = y;
   V.total = y;
+  // Estimates of files above the window changed (calibration, collapse of an unmounted
+  // file): the spacer changes height by the same amount. Move scrollTop with it now,
+  // before the window is computed from the new tops, so the window stays where the reader is.
+  const si = V.spacerPath === null ? undefined : V.index.get(V.spacerPath);
+  if (si !== undefined) {
+    const delta = V.tops[si]! - V.spacerTop;
+    V.spacerTop = V.tops[si]!;
+    const sc = S.scroller;
+    if (Math.abs(delta) >= 0.5 && sc && performance.now() > holdUntil) {
+      sc.scrollTop += delta;
+      V.anchorTop += delta;
+      if (reading) reading.y += delta;
+    }
+  }
 }
 
 function indexAt(y: number): number {
@@ -208,6 +225,8 @@ export function updateWindow(force = false) {
   V.anchorTop = V.tops[V.anchorIdx] ?? 0;
   const cur = n ? S.files[indexAt(Math.max(0, top + 8))] : undefined;
   if (cur) setCurrent(cur.path);
+  V.spacerPath = S.files[first]?.path ?? null;
+  V.spacerTop = V.tops[first] ?? 0;
   if (force || first !== V.first || last !== V.last) {
     V.first = first;
     V.last = last;
@@ -233,7 +252,8 @@ export function correctAnchor() {
   const i = V.index.get(V.anchorPath);
   if (i === undefined) return;
   const delta = V.tops[i]! - V.anchorTop;
-  if (!keepReading() && Math.abs(delta) >= 0.5 && performance.now() > holdUntil) sc.scrollTop += delta;
+  const kr = keepReading();
+  if (!kr && Math.abs(delta) >= 0.5 && performance.now() > holdUntil) sc.scrollTop += delta;
   V.anchorTop = V.tops[i]!;
 }
 
@@ -254,6 +274,9 @@ function contentY(el: Element, sc: HTMLElement): number {
 }
 
 export function captureReading() {
+  // Apply any shift that happened since the last correction first: a capture taken
+  // after an uncorrected change would make that change permanent.
+  keepReading();
   const sc = S.scroller;
   reading = null;
   if (!sc) return;
