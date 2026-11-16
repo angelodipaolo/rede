@@ -152,6 +152,17 @@ export function headCommit(cwd: string): Promise<string | null> {
   return resolveCommit(cwd, 'HEAD');
 }
 
+/** HEAD commit and its tree in one call. A repo without commits gives null and the empty tree. */
+export async function headAndTree(cwd: string): Promise<{ head: string | null; tree: string }> {
+  try {
+    const [head, tree] = (await git(['rev-parse', 'HEAD^{commit}', 'HEAD^{tree}'], { cwd })).split('\n');
+    if (head && tree) return { head, tree };
+  } catch {
+    /* unborn HEAD */
+  }
+  return { head: null, tree: EMPTY_TREE };
+}
+
 export async function treeOf(cwd: string, commit: string): Promise<string> {
   return gitLine(['rev-parse', '--verify', `${commit}^{tree}`], { cwd });
 }

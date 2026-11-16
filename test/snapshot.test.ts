@@ -90,6 +90,41 @@ describe('working tree snapshot', () => {
     }
   });
 
+  it('drops an untracked file from the snapshot once it is ignored, and sees untracked directories', async () => {
+    const { snap } = setup();
+    const headTree = repo.git('rev-parse', 'HEAD^{tree}').trim();
+    const names = async () => repo.git('diff-tree', '-r', '--name-only', headTree, await snap.snapshot()).trim().split('\n').filter(Boolean);
+    repo.write('build/out.js', 'x\n');
+    repo.write('build/deep/more.js', 'y\n');
+    expect(await names()).toEqual(['build/deep/more.js', 'build/out.js']);
+    repo.write('.gitignore', 'ignored.log\nbuild/\n');
+    expect(await names()).toEqual(['.gitignore']);
+    repo.rm('.gitignore');
+    repo.git('checkout', '--', '.gitignore');
+    expect(await names()).toEqual(['build/deep/more.js', 'build/out.js']);
+  });
+
+  it('rebuilds the snapshot when git gc pruned a blob the private index points to', async () => {
+    repo = new TempRepo();
+    repo.write('a.ts', lines(10));
+    repo.commit();
+    repo.write('a.ts', lines(10) + 'staged then unstaged\n');
+    repo.git('add', 'a.ts'); // the blob exists only in the repository's store, reachable from the index
+    const m = await makeMargin(repo);
+    try {
+      await m.openReview({ kind: 'working' });
+      await m.getReview('working');
+      repo.git('reset', '-q');
+      repo.git('reflog', 'expire', '--expire=now', '--all');
+      repo.git('gc', '--prune=now', '--quiet');
+      await m.getReview('working');
+      const [f] = await m.hunks('working', 'all', ['a.ts']);
+      expect(f!.hunks.flatMap((h) => h.lines).some((l) => l.text === 'staged then unstaged')).toBe(true);
+    } finally {
+      m.close();
+    }
+  });
+
   it('returns the same tree when nothing changed and a new one after an edit', async () => {
     const { snap } = setup();
     const t1 = await snap.snapshot();

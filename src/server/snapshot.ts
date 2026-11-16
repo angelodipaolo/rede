@@ -14,6 +14,31 @@ export function copyIndex(from: string, to: string): void {
   fs.utimesSync(to, st.atime, st.mtime);
 }
 
+/**
+ * Paths from `git status --porcelain=v1 -z --no-renames` whose working-tree state differs from
+ * the index: modified, deleted, type-changed, unmerged and untracked (files or whole directories).
+ */
+export function changedPaths(out: string): string[] {
+  const paths: string[] = [];
+  for (const rec of out.split('\0')) {
+    if (rec.length < 4) continue;
+    const x = rec[0]!;
+    const y = rec[1]!;
+    const unmerged = x === 'U' || y === 'U' || (x === y && (x === 'A' || x === 'D'));
+    if (y !== ' ' || unmerged) paths.push(rec.slice(3));
+  }
+  return paths;
+}
+
+function indexKey(file: string): string | null {
+  try {
+    const st = fs.statSync(file);
+    return `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
 /** One promise chain per index file, so two snapshots never race on the same index lock. */
 const chains = new Map<string, Promise<unknown>>();
 
@@ -37,6 +62,8 @@ function serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
  */
 export class WorkingSnapshotter {
   readonly indexFile: string;
+  /** The last tree, valid while the private index file does not change. */
+  private last: { key: string; tree: string } | null = null;
 
   constructor(
     private readonly root: string,
@@ -88,10 +115,57 @@ export class WorkingSnapshotter {
       }
     }
     const env = { GIT_INDEX_FILE: this.indexFile };
-    // --ignore-errors: an unreadable file must not abort the whole snapshot.
-    // Exit code 1 then means "some files were skipped".
-    await gitBuffer(['add', '--all', '--ignore-errors', '--', '.'], { cwd: this.root, env, okCodes: [0, 1] });
-    return gitLine(['write-tree'], { cwd: this.root, env });
+    // `git add --all -- .` walks every directory for untracked files on each call (200 ms
+    // for 10,000 files). `git status` can use the untracked cache, which lives in the private
+    // index, so it finds what changed in about 40 ms. Only those paths go to `git add`.
+    const status = await gitBuffer(
+      ['-c', 'core.untrackedCache=true', 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--no-renames', '--ignore-submodules=dirty'],
+      { cwd: this.root, env },
+    );
+    const paths = changedPaths(status.toString('utf8'));
+    if (paths.some((p) => p === '.gitignore' || p.endsWith('/.gitignore'))) await this.dropIgnored(env);
+    if (paths.length) {
+      // --ignore-errors: an unreadable file must not abort the whole snapshot.
+      // Exit code 1 then means "some files were skipped".
+      // Many files (first snapshot, branch switch): write the blobs into one pack instead of one
+      // loose file each (bulk check-in; 2.5x faster for 1,500 files). Only for large adds, so
+      // the private object directory does not fill up with small packs.
+      const bulk = paths.length > 100 ? ['-c', 'core.bigFileThreshold=1'] : [];
+      await gitBuffer([...bulk, 'add', '--all', '--ignore-errors', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+        cwd: this.root,
+        env: { ...env, GIT_LITERAL_PATHSPECS: '1' },
+        input: paths.join('\0') + '\0',
+        okCodes: [0, 1],
+      });
+    }
+    const key = indexKey(this.indexFile);
+    if (key && this.last?.key === key) return this.last.tree;
+    const tree = await gitLine(['write-tree'], { cwd: this.root, env });
+    this.last = key ? { key, tree } : null;
+    return tree;
+  }
+
+  /**
+   * git add never removes a file from an index once it is there. A file that Margin picked up
+   * as untracked and that the user ignores later (build output added to .gitignore) would stay
+   * in the review forever. Removes such files: ignored, in the private index, not in the real one.
+   */
+  private async dropIgnored(env: Record<string, string>): Promise<void> {
+    const list = async (e: Record<string, string>) =>
+      (await gitBuffer(['ls-files', '-z', '--cached', '--ignored', '--exclude-standard'], { cwd: this.root, env: e }))
+        .toString('utf8')
+        .split('\0')
+        .filter(Boolean);
+    const ours = await list(env);
+    if (!ours.length) return;
+    const real = new Set(await list({ GIT_INDEX_FILE: path.join(this.gitDir, 'index') }));
+    const drop = ours.filter((p) => !real.has(p));
+    if (!drop.length) return;
+    await gitBuffer(['rm', '--cached', '-q', '--ignore-unmatch', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+      cwd: this.root,
+      env: { ...env, GIT_LITERAL_PATHSPECS: '1' },
+      input: drop.join('\0') + '\0',
+    });
   }
 
   private clearStaleLock(): void {

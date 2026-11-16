@@ -325,7 +325,7 @@ async function cmdRelease(args: Args): Promise<void> {
 async function cmdDiff(args: Args): Promise<void> {
   const c = await connect();
   const id = await pickReview(c, args);
-  const r = await api<Review>(c, 'GET', `/api/reviews/${enc(id)}?scope=${scopeOf(args)}`);
+  const r = await api<Review>(c, 'GET', `/api/reviews/${enc(id)}?scope=${scopeOf(args)}&fresh=1`);
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
   out(formatDiff(r, has(args, '--stat')));
   if (has(args, '--stat')) return;

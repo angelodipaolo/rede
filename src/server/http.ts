@@ -155,8 +155,12 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
         const body = await readJson(req);
         return sendJson(res, 200, await margin.openReview(body?.spec));
       }
-      case 'GET reviews/:id':
-        return sendJson(res, 200, await margin.getReview(seg[1]!, parseScope(q.get('scope'))));
+      case 'GET reviews/:id': {
+        // While a browser has the review open, a state up to 1 s old is reused (the poller pushes
+        // diff-changed for newer changes). `fresh=1` (the CLI) always recomputes.
+        const maxAge = q.get('fresh') !== '1' && margin.isLive(seg[1]!) ? 1000 : 0;
+        return sendJson(res, 200, await margin.getReview(seg[1]!, parseScope(q.get('scope')), maxAge));
+      }
       case 'POST reviews/:id/hunks': {
         const body = await readJson(req);
         return sendJson(res, 200, await margin.hunks(seg[1]!, parseScope(q.get('scope')), body?.paths));

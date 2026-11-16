@@ -46,7 +46,7 @@ import {
   EMPTY_TREE,
   gitLine,
   hashObject,
-  headCommit,
+  headAndTree,
   marginDir,
   mergeBase,
   missingObjects,
@@ -231,7 +231,17 @@ export class Margin {
 
   async repoInfo(): Promise<RepoInfo> {
     const name = this.repo.root.split('/').filter(Boolean).pop() ?? this.repo.root;
-    return { root: this.repo.root, name, branch: await currentBranch(this.cwd) };
+    // Read HEAD directly (no process) when it is a plain symbolic ref; else ask git.
+    let branch: string | null | undefined;
+    try {
+      const head = fs.readFileSync(path.join(this.repo.gitDir, 'HEAD'), 'utf8').trim();
+      if (/^[0-9a-f]{40,64}$/.test(head)) branch = null;
+      else if (head.startsWith('ref: refs/heads/') && head !== 'ref: refs/heads/.invalid') branch = head.slice('ref: refs/heads/'.length);
+    } catch {
+      /* fall back to git */
+    }
+    if (branch === undefined) branch = await currentBranch(this.cwd);
+    return { root: this.repo.root, name, branch };
   }
 
   // ================================================================ reviews
@@ -309,9 +319,11 @@ export class Margin {
     const fail = (m: string) => new HttpError(409, m);
     switch (spec.kind) {
       case 'working': {
-        const head = await headCommit(cwd);
-        const oldTree = head ? await treeOf(cwd, head) : EMPTY_TREE;
-        const [index, worktree] = await Promise.all([this.indexReader.read(oldTree), this.snapshotter.snapshot()]);
+        // The snapshot is the slow part: start it first, read HEAD and the index meanwhile.
+        const worktreeP = this.snapshotter.snapshot();
+        worktreeP.catch(() => {});
+        const { head, tree: oldTree } = await headAndTree(cwd);
+        const [index, worktree] = await Promise.all([this.indexReader.read(oldTree), worktreeP]);
         return { trees: { old: oldTree, index, new: worktree }, resolved: { from: head ?? EMPTY_TREE, to: null }, scopes: WORKING_SCOPES };
       }
       case 'branch': {
@@ -476,8 +488,18 @@ export class Margin {
     return { viewed: !!v && v.fingerprint === f.fingerprint, changedSinceViewed: !!v && v.fingerprint !== f.fingerprint };
   }
 
-  async getReview(id: string, scope: ReviewScope = 'all'): Promise<Review> {
-    const [state, repo] = await Promise.all([this.compute(id), this.repoInfo()]);
+  /** True while a browser has the review open (the live poller then keeps its state fresh). */
+  isLive(id: string): boolean {
+    return this.pollers.has(id);
+  }
+
+  /**
+   * @param maxAgeMs reuse a state computed this recently (0: always recompute). The HTTP layer
+   *   passes 1000 while a browser has the review open: the 2 s poller then pushes diff-changed
+   *   for anything newer.
+   */
+  async getReview(id: string, scope: ReviewScope = 'all', maxAgeMs = 0): Promise<Review> {
+    const [state, repo] = await Promise.all([maxAgeMs > 0 ? this.freshState(id, maxAgeMs) : this.compute(id), this.repoInfo()]);
     this.checkScope(state, scope);
     this.store.touchReviewOpened(id, nowIso());
     const files = await this.metaFiles(state, scope);
