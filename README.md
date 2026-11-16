@@ -92,10 +92,14 @@ Margin keeps its data in `.git/margin/` of each repository (for a linked
 worktree: in that worktree's git directory). It is never committed.
 
 - `margin.db`: reviews, threads, messages, viewed state (SQLite, built into Node).
-- `server.json`: pid and port of the running server.
+- `server.json`: pid, port and build of the running server. A newer `margin`
+  build replaces an older running server on the same port.
 - `server.log`: server output.
 - `snapshot.index`, `staged.index`: private git index files used to snapshot
   the working tree. Your real index is never written.
+- `objects/`: git objects written by snapshots. Margin never adds objects to
+  your repository's object store; it empties this directory at start when it
+  holds more than about 20,000 objects. Safe to delete while no server runs.
 
 ## Design notes
 
@@ -104,11 +108,19 @@ worktree: in that worktree's git directory). It is never committed.
   `Host` headers (DNS rebinding) and foreign `Origin` on writes, and exits by
   itself after 30 minutes without a browser, a waiting agent or a request
   (`MARGIN_IDLE_TIMEOUT` in seconds). No runtime dependencies.
-- **Every side of a diff is a git tree.** The working tree is snapshotted with
-  `git add -A` into a private index and `git write-tree`. The private index is
-  reused, so git's stat cache makes a snapshot cheap (about 60 ms for a 7,000
-  file, 500 MB repository). While a browser has a review open, the server
-  snapshots every 2 s and pushes `diff-changed` over SSE when the diff changes.
+- **Every side of a diff is a git tree.** The working tree is snapshotted into
+  a private index: `git status` (with the untracked cache) finds changed paths,
+  `git add` stages only those, `git write-tree` makes the tree. New objects go
+  to `.git/margin/objects`, with the repository's objects as an alternate. A
+  snapshot of a 10,000-file repository takes about 40 ms. While a browser has
+  a review open, the server snapshots every 2 s and pushes `diff-changed` over
+  SSE when the diff changes.
+- **Hunks load on demand.** GET review returns file metadata only (from
+  `git diff-tree --raw --numstat`); the UI asks for hunks with
+  `POST /api/reviews/:id/hunks`. Per-file results are cached by blob pair, so
+  an edit to one file does not re-diff the others. `node
+  --experimental-transform-types test/perf/scale.ts` measures a 1,500-file
+  diff in a 10,000-file repository.
 - **Threads follow the code.** Each thread stores the commented lines and some
   context. When the code moves, the thread moves; when the lines change or the
   file leaves the diff, the thread is marked outdated and keeps its last

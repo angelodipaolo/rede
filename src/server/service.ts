@@ -122,6 +122,8 @@ function prepareObjectStore(repo: RepoPaths, dir: string): void {
   let count = 0;
   try {
     for (const sub of fs.readdirSync(objects)) if (/^[0-9a-f]{2}$/.test(sub)) count += fs.readdirSync(path.join(objects, sub)).length;
+    // Bulk check-ins write one pack each; count a pack like many loose objects.
+    count += fs.readdirSync(path.join(objects, 'pack')).filter((f) => f.endsWith('.pack')).length * 500;
   } catch {
     /* not there yet */
   }

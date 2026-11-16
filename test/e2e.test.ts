@@ -122,6 +122,27 @@ describe('HTTP end to end', () => {
     stream.close();
   });
 
+  it('drops SSE subscribers and waiters when clients disconnect', async () => {
+    const port = await setup();
+    await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } });
+    const streams = Array.from({ length: 20 }, () => sse(port, '/api/reviews/working/events'));
+    await Promise.all(streams.map((s) => s.waitFor((e) => e.type === 'agents')));
+    expect(srv!.margin.subscriberCount).toBe(20);
+    const waits = Array.from({ length: 5 }, (_, i) => {
+      const r = http.get({ host: '127.0.0.1', port, path: `/api/agent/wait?agent=a${i}&timeout=600` });
+      r.on('error', () => {});
+      return r;
+    });
+    const until = async (f: () => boolean) => {
+      for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 20));
+      return f();
+    };
+    expect(await until(() => srv!.margin.waiterCount === 5)).toBe(true);
+    for (const s of streams) s.close();
+    for (const w of waits) w.destroy();
+    expect(await until(() => srv!.margin.subscriberCount === 0 && srv!.margin.waiterCount === 0)).toBe(true);
+  });
+
   it('persists threads across a restart', async () => {
     const port = await setup();
     await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } });

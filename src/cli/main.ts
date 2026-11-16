@@ -262,7 +262,7 @@ async function cmdReply(args: Args): Promise<void> {
 async function cmdComment(args: Args): Promise<void> {
   const target = args.pos[1];
   if (!target) throw new UserError('Usage: margin comment <path>[:<line>[-<end>]] [-m <text>]');
-  const m = /^(.*?):(\d+)(?:-(\d+))?$/.exec(target);
+  const m = /^(.*?):(\d+)(?:-(\d+))?$/s.exec(target);
   const rawPath = m ? m[1]! : target;
   const start = m ? Number(m[2]) : null;
   const end = m ? Number(m[3] ?? m[2]) : null;
