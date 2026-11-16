@@ -298,6 +298,9 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
 
     const show = await run(['show', '1']);
     expect(show.out).toContain('const a = `x`;');
+    const inCodex = await run(['show', '1'], undefined, { CODEX_THREAD_ID: 't1', CODEX_SANDBOX: 'seatbelt' });
+    expect(inCodex.out).toContain("margin reply 1 --as codex -m '");
+    expect(inCodex.out).not.toContain('MARGIN_EOF');
     expect(show.out).toContain('$HOME stays literal');
 
     // A human question, then wait.

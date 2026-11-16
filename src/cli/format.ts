@@ -31,7 +31,7 @@ function author(t: Thread['messages'][number]): string {
   return t.author.kind === 'human' ? `${t.author.name} (human reviewer)` : `${t.author.name} (agent)`;
 }
 
-export function formatAgentThread(at: AgentThread, agentName: string, opts: { replyHint: boolean }): string {
+export function formatAgentThread(at: AgentThread, agentName: string, opts: { replyHint: boolean; argStyle?: boolean }): string {
   const t = at.thread;
   const out: string[] = [];
   const flags = [t.resolved ? 'resolved' : 'open', `agent state: ${t.agentState}${t.claimedBy ? ` (${t.claimedBy})` : ''}`];
@@ -56,7 +56,11 @@ export function formatAgentThread(at: AgentThread, agentName: string, opts: { re
     out.push(m.body.trimEnd());
   }
   out.push('--- end of conversation ---');
-  if (opts.replyHint && !t.resolved) {
+  if (opts.replyHint && !t.resolved && opts.argStyle) {
+    out.push('');
+    out.push(`Reply: margin reply ${t.id} --as ${agentName} -m '<your answer in markdown>'`);
+    out.push("(one plain command, no heredoc or pipe; the text must not contain ' : write ’ instead)");
+  } else if (opts.replyHint && !t.resolved) {
     out.push('');
     out.push(`Reply: margin reply ${t.id} --as ${agentName} <<'MARGIN_EOF'`);
     out.push('<your answer in markdown>');

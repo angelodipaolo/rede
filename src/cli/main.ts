@@ -14,7 +14,7 @@ import type {
 } from '../shared/types.ts';
 import { VERSION } from '../server/errors.ts';
 import { currentBranch, defaultBranch, discoverRepo, git, type RepoPaths } from '../server/git.ts';
-import { ApiFailure, ensureServer, findServer, request, stopServer, streamTo } from './client.ts';
+import { ApiFailure, detectAgentName, ensureServer, findServer, inCodex, request, stopServer, streamTo } from './client.ts';
 import { formatAgentThread, formatDiff, formatThreadLine, location } from './format.ts';
 import { GUIDE, setup } from './guide.ts';
 
@@ -43,7 +43,8 @@ Agents (default output is markdown for an LLM; --json for raw JSON):
   margin show <id> | resolve <id> | release
   margin diff [--stat] [--staged|--unstaged]
   margin guide            print the agent instructions
-  margin setup            install the guide as a Claude Code and Codex skill
+  margin setup            install the guide as a Claude Code and Codex skill, and a Codex
+                          rule that runs margin agent commands outside the Codex sandbox
 Common: --as <agent name>, --review <review id>
 `;
 
@@ -96,12 +97,12 @@ function has(args: Args, ...names: string[]): boolean {
 
 // ------------------------------------------------------------------ helpers
 
-export function detectAgentName(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.MARGIN_AGENT?.trim()) return env.MARGIN_AGENT.trim();
-  if (env.CLAUDECODE) return 'claude';
-  const codexKeys = ['CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_TOOL_CALL_ID', 'CODEX_CI'];
-  if (codexKeys.some((k) => env[k] !== undefined)) return 'codex';
-  return 'agent';
+/**
+ * Codex runs a command outside its sandbox (rule from `margin setup`) only when the command has no
+ * heredoc or redirection, so Codex passes the reply with -m instead of on stdin.
+ */
+function argStyle(name: string): boolean {
+  return name === 'codex' || inCodex();
 }
 
 function agentName(args: Args): string {
@@ -240,7 +241,7 @@ async function cmdWait(args: Args): Promise<void> {
   if (r.timedOut || !r.threads.length) return out('No new comments. Run `margin wait` again.');
   const n = r.threads.length;
   const head = `# ${n} thread${n > 1 ? 's' : ''} for you (${name})\nAnswer each one with \`margin reply <id>\`, then run \`margin wait\` again.`;
-  out([head, ...r.threads.map((at) => formatAgentThread(at, name, { replyHint: true }))].join('\n\n'));
+  out([head, ...r.threads.map((at) => formatAgentThread(at, name, { replyHint: true, argStyle: argStyle(name) }))].join('\n\n'));
 }
 
 function threadId(s: string | undefined): number {
@@ -310,7 +311,7 @@ async function cmdShow(args: Args): Promise<void> {
   const c = await connect();
   const at = await api<AgentThread>(c, 'GET', `/api/agent/threads/${id}`);
   if (has(args, '--json')) return out(JSON.stringify(at, null, 2));
-  out(formatAgentThread(at, agentName(args), { replyHint: true }));
+  out(formatAgentThread(at, agentName(args), { replyHint: true, argStyle: argStyle(agentName(args)) }));
 }
 
 async function cmdResolve(args: Args): Promise<void> {
@@ -341,9 +342,13 @@ async function cmdDiff(args: Args): Promise<void> {
 }
 
 function cmdSetup(): void {
-  const res = setup();
-  out(res.map((r) => `${r.status.padEnd(9)} ${r.path}`).join('\n'));
-  out('Claude Code: ask "connect to margin" or use /margin. Codex: ask it to use the margin skill.');
+  const lines: string[] = [];
+  for (const r of setup()) {
+    lines.push(`${r.status.padEnd(9)} ${r.path}  (${r.what})`);
+    if (r.status !== 'unchanged' && r.path.endsWith('.rules')) lines.push(...r.content.trimEnd().split('\n').map((l) => `          ${l}`));
+  }
+  out(lines.join('\n'));
+  out('Claude Code: ask "connect to margin" or use /margin. Codex: start a new session, then ask it to use the margin skill.');
 }
 
 function rangeSpec(s: string): ReviewSpec | null {

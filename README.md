@@ -42,12 +42,13 @@ Other commands: `margin status`, `margin list`, `margin stop`.
 Agents use the `margin` CLI. No MCP server is needed.
 
 ```sh
-margin setup        # install the Margin skill for Claude Code and Codex
+margin setup        # install the Margin skill for Claude Code and Codex, and the Codex rule
 ```
 
-`setup` writes `~/.claude/skills/margin/SKILL.md` and
-`~/.codex/skills/margin/SKILL.md` (it respects `CLAUDE_CONFIG_DIR` and
-`CODEX_HOME`). Then tell the agent "connect to margin" (or use `/margin` in
+`setup` writes `~/.claude/skills/margin/SKILL.md`,
+`~/.codex/skills/margin/SKILL.md` and `~/.codex/rules/margin.rules` (it
+respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`), and prints each file it changed.
+It is safe to run again. Then tell the agent "connect to margin" (or use `/margin` in
 Claude Code). `margin guide` prints the same instructions, so you can also paste
 them into any agent.
 
@@ -82,9 +83,47 @@ agent. If the agent does not reply within 15 minutes, or runs `margin release`,
 the thread goes back to "pending". A new message from you on a working thread
 is delivered again to the same agent.
 
-Codex runs commands in a sandbox. Margin talks to a server on 127.0.0.1, so
-the margin commands need network access (approve them, or allow network in
-your sandbox settings).
+### Codex
+
+Codex runs commands in a sandbox (`workspace-write` in interactive `codex`,
+`read-only` in `codex exec`). The sandbox blocks the connection to the Margin
+server on 127.0.0.1 (`EPERM`) and writes to `.git/margin`, in both modes.
+Turning on `sandbox_workspace_write.network_access` would open the network for
+every command of the session, so Margin does not use it.
+
+Instead, `margin setup` writes this Codex rule to
+`~/.codex/rules/margin.rules`:
+
+```python
+prefix_rule(
+    pattern = ["margin", ["wait", "reply", "comment", "threads", "show", "diff", "release", "resolve", "status", "list", "guide"]],
+    decision = "allow",
+    justification = "...",
+)
+host_executable(name = "margin", paths = ["/Users/you/.local/bin/margin"])
+```
+
+Codex runs a command that matches an `allow` rule outside the sandbox, without
+a prompt, also in `codex exec` (approval policy `never`). Only the margin agent
+commands match, and only the `margin` executables that were on `PATH` when you
+ran `setup` (a script named `margin` in the workspace does not). Start a new
+Codex session after `setup`. Delete the file to undo.
+
+Codex applies rules only to plain commands. A pipe, `&&`, redirection,
+heredoc, `VAR=value` prefix or quote escape such as `'\''` makes the command
+run in the sandbox again. So in Codex the reply hint and the guide use
+`-m '<text>'` instead of a heredoc, and ask for ’ instead of a straight `'` in
+the text. When a margin command runs in the sandbox anyway, it fails at once
+and says which case it is:
+
+```
+margin: cannot reach the Margin server on 127.0.0.1:56117 (connection blocked: EPERM). You are in the Codex sandbox: this command did not match the margin rule from `margin setup`.
+Fix: rerun it as one plain command: no pipe, &&, redirection, heredoc or VAR= prefix, and no '\'' escape in the -m text (write ’ instead of ').
+```
+
+Without the rule file, the fix line says to rerun the command with escalated
+permissions (interactive `codex` asks you), or to run `margin setup`. In
+`codex exec` the approval policy is `never`, so there the rule is required.
 
 ## Storage
 
@@ -92,8 +131,13 @@ Margin keeps its data in `.git/margin/` of each repository (for a linked
 worktree: in that worktree's git directory). It is never committed.
 
 - `margin.db`: reviews, threads, messages, viewed state (SQLite, built into Node).
-- `server.json`: pid, port and build of the running server. A newer `margin`
-  build replaces an older running server on the same port.
+- `server.json`: pid, port and build of the running server. A strictly newer
+  `margin` (higher version, or same version and a newer bundle) replaces an
+  older running server on the same port. An older `margin` uses the newer
+  server as is, so two installs never restart each other in turn. A command
+  that cannot write `.git/margin` (sandbox) never replaces a server.
+- `start.lock`: held for a moment by the command that starts the server. A
+  lock left by a process that no longer runs is removed at once.
 - `server.log`: server output.
 - `snapshot.index`, `staged.index`: private git index files used to snapshot
   the working tree. Your real index is never written.

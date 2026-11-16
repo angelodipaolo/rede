@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import type { Health } from '../shared/types.ts';
 import { marginDir, type RepoPaths } from '../server/git.ts';
@@ -135,16 +136,26 @@ function processAncestors(): string[] {
   }
 }
 
+/** The rules file `margin setup` writes for Codex. */
+export function codexRulesFile(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'rules', 'margin.rules');
+}
+
 /** Why a sandbox blocks margin and what to do, as "<reason>\n<fix>". */
 export function sandboxAdvice(env: NodeJS.ProcessEnv = process.env): string {
-  if (inCodex(env)) {
+  if (!inCodex(env)) {
+    return 'You are probably in a sandbox.\nFix: run margin commands outside the sandbox (allow the margin command, or approve escalation).';
+  }
+  if (fs.existsSync(codexRulesFile(env))) {
     return (
-      'You are probably in the Codex sandbox.\n' +
-      'Fix: run margin as one plain command (no pipe, redirection, heredoc or VAR= prefix), so the rule from `margin setup` runs it outside the sandbox. ' +
-      'Without that rule: rerun it with escalated permissions, or ask the user to run `margin setup` and start a new Codex session.'
+      'You are in the Codex sandbox: this command did not match the margin rule from `margin setup`.\n' +
+      "Fix: rerun it as one plain command: no pipe, &&, redirection, heredoc or VAR= prefix, and no '\\'' escape in the -m text (write ’ instead of ')."
     );
   }
-  return 'You are probably in a sandbox.\nFix: run margin commands outside the sandbox (allow the margin command, or approve escalation).';
+  return (
+    'You are in the Codex sandbox, and the margin rule is not installed.\n' +
+    'Fix: rerun this command with escalated permissions, or ask the user to run `margin setup` in a terminal and start a new Codex session.'
+  );
 }
 
 const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException | null)?.code;
