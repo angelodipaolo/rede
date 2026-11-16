@@ -1,8 +1,8 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { Thread } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
-import { dismissToast, jumpToThread, S, threadLabel } from '../store.ts';
-import { agentColorClass, relTime } from '../util.ts';
+import { closeComposer, dismissToast, jumpToThread, pushToast, S, threadLabel, type ComposerState } from '../store.ts';
+import { agentColorClass, copyText, relTime } from '../util.ts';
 import { Icon } from './Icon.tsx';
 import { Avatar, ThreadView } from './Thread.tsx';
 
@@ -155,6 +155,78 @@ export function OutdatedSection() {
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+/** Drafts whose file, thread or message is gone. Their text is kept here until discarded. */
+function orphanDrafts(): ComposerState[] {
+  // Only against a loaded review of the current scope (a scope switch empties the file list first).
+  if (!S.review || S.review.scope !== S.scope) return [];
+  const out: ComposerState[] = [];
+  for (const c of S.composers.values()) {
+    if (!c.text.trim()) continue;
+    if (c.kind === 'new') {
+      if (c.scope === S.scope && !S.fileByPath.has(c.path)) out.push(c);
+    } else {
+      const t = c.threadId !== undefined ? S.threads.get(c.threadId) : undefined;
+      if (!t || (c.kind === 'edit' && !t.messages.some((m) => m.id === c.messageId))) out.push(c);
+    }
+  }
+  return out;
+}
+
+function draftWhere(c: ComposerState): string {
+  if (c.kind === 'new') {
+    const a = c.anchor;
+    if (!a || a.startLine === null) return `Comment on ${c.path}`;
+    return `Comment on ${c.path}:${a.startLine === a.endLine ? a.endLine : `${a.startLine}-${a.endLine}`}`;
+  }
+  return c.kind === 'reply' ? `Reply to thread #${c.threadId}` : `Edit of a message in thread #${c.threadId}`;
+}
+
+export function OrphanDrafts() {
+  useTopics('threads', 'files', 'review', 'composers');
+  const list = orphanDrafts();
+  const seen = useRef(new Set<string>());
+  useEffect(() => {
+    for (const c of list) {
+      if (seen.current.has(c.key)) continue;
+      seen.current.add(c.key);
+      pushToast({ kind: 'info', text: `Draft kept at the end of the diff: ${draftWhere(c).toLowerCase()} left the diff.` });
+    }
+  });
+  if (!list.length) return null;
+  return (
+    <section class="card orphan-sec">
+      <div class="fh">
+        <span class="badge warn">Drafts</span>
+        <span class="fpath">
+          {list.length} {list.length === 1 ? 'draft' : 'drafts'} whose code is no longer in this diff
+        </span>
+      </div>
+      <div class="fb">
+        {list.map((c) => (
+          <div key={c.key} class="attach top">
+            <div class="od-path">{draftWhere(c)}</div>
+            <pre class="orphan-txt">{c.text}</pre>
+            <div class="cmp-bar">
+              <span class="sp" />
+              <button class="btn sm" onClick={() => void copyText(c.text).then(() => pushToast({ kind: 'info', text: 'Draft copied.' }))}>
+                Copy text
+              </button>
+              <button
+                class="btn sm ghost"
+                onClick={() => {
+                  if (confirm('Discard this draft?')) closeComposer(c.key);
+                }}
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

@@ -152,6 +152,7 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
         <span class="rl-txt">{first?.body.split('\n')[0]}</span>
         <span class="rl-n">
           {t.messages.length} {t.messages.length === 1 ? 'message' : 'messages'} · resolved
+          {S.composers.has(`reply:${id}`) && <b class="rl-draft"> · draft reply</b>}
         </span>
       </div>
     );
@@ -204,8 +205,7 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
         ))}
       </div>
       <AgentStatus t={t} />
-      {!t.resolved &&
-        (replying ? (
+      {replying ? (
           <div class="reply-wrap">
             <Composer ck={replyKey} />
           </div>
@@ -216,9 +216,9 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
             class="reply-fake"
             onClick={() => openComposer({ key: replyKey, kind: 'reply', scope: S.scope, path: a.path, threadId: id })}
           >
-            <Icon name="reply" size={14} /> Reply…
+            <Icon name="reply" size={14} /> {t.resolved ? 'Reply (reopens the thread)…' : 'Reply…'}
           </button>
-        ))}
+        )}
     </div>
   );
 }

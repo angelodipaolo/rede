@@ -523,7 +523,17 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
 
     let placeholder: preact.ComponentChildren = null;
     if (!shown.hunks.length)
-      placeholder = <div class="ph-note">{f.status === 'renamed' ? 'File renamed without changes.' : 'No content changes.'}</div>;
+      placeholder = (
+        <div class="ph-note">
+          {f.status === 'renamed'
+            ? 'File renamed without changes.'
+            : f.status === 'added'
+              ? 'Empty file added.'
+              : f.status === 'deleted'
+                ? 'Empty file deleted.'
+                : 'No content changes (file mode or type changed).'}
+        </div>
+      );
 
     body = (
       <div

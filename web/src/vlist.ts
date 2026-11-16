@@ -347,6 +347,8 @@ export function measureObserver(): ResizeObserver {
       const f = S.fileByPath.get(path);
       if (!f) continue;
       const old = heightOf(f);
+      // 0 means the element is not rendered (an ancestor is hidden): not a real height.
+      if (h <= 0) continue;
       if (Math.abs(h - old) < 0.5) continue;
       setMeasured(f, h, el);
       dirty = true;

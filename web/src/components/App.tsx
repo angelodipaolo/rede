@@ -8,7 +8,7 @@ import { init, S } from '../store.ts';
 import { captureReading, correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
 import { relTime } from '../util.ts';
 import { FileCard, updateAllOverflow } from './FileCard.tsx';
-import { OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
+import { OrphanDrafts, OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { TopBar } from './TopBar.tsx';
 
@@ -114,6 +114,7 @@ function DiffColumn() {
           {r && S.files.length === 0 && <EmptyState />}
           <DiffList />
           <OutdatedSection />
+          <OrphanDrafts />
           {S.files.length > 0 && <div class="tail">End of diff · {S.files.length} files</div>}
         </>
       )}

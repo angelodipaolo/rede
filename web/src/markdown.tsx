@@ -1,4 +1,4 @@
-import DOMPurify from 'dompurify';
+import DOMPurify, { type Config } from 'dompurify';
 import { Marked } from 'marked';
 import { useLayoutEffect, useMemo, useRef } from 'preact/hooks';
 import { highlightText } from './highlight.ts';
@@ -13,13 +13,47 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
+/**
+ * Messages come from agents, so their markdown is untrusted. Nothing may load from the
+ * network: remote images become a link the reader can open on purpose, and tags and
+ * attributes that can fetch or restyle the page (style, srcset, iframes, forms) are removed.
+ */
+const PURIFY: Config & { RETURN_DOM_FRAGMENT: true } = {
+  USE_PROFILES: { html: true },
+  FORBID_TAGS: ['style', 'link', 'meta', 'base', 'form', 'input', 'button', 'textarea', 'select', 'option', 'iframe', 'frame', 'object', 'embed', 'video', 'audio', 'source', 'track', 'picture', 'svg', 'math', 'dialog'],
+  FORBID_ATTR: ['style', 'srcset', 'background', 'poster', 'formaction', 'ping', 'id', 'name'],
+  RETURN_DOM_FRAGMENT: true,
+};
+
+function isLocalImage(src: string): boolean {
+  return /^data:image\/(png|gif|jpe?g|webp|avif|bmp);/i.test(src);
+}
+
 const htmlCache = new Map<string, string>();
 const codeCache = new Map<string, string>();
 
 export function renderMarkdown(src: string): string {
   let html = htmlCache.get(src);
   if (html === undefined) {
-    html = DOMPurify.sanitize(marked.parse(src) as string, { USE_PROFILES: { html: true } });
+    const frag = DOMPurify.sanitize(marked.parse(src) as string, PURIFY);
+    for (const img of frag.querySelectorAll('img')) {
+      const url = img.getAttribute('src') ?? '';
+      if (isLocalImage(url)) continue;
+      const alt = img.getAttribute('alt') || 'image';
+      const ph = document.createElement(/^https?:/i.test(url) ? 'a' : 'span');
+      ph.className = 'img-blocked';
+      ph.textContent = `[${alt}: remote image not loaded]`;
+      if (ph instanceof HTMLAnchorElement) {
+        ph.href = url;
+        ph.target = '_blank';
+        ph.rel = 'noopener noreferrer';
+        ph.title = `Open ${url}`;
+      }
+      img.replaceWith(ph);
+    }
+    const box = document.createElement('div');
+    box.appendChild(frag);
+    html = box.innerHTML;
     if (htmlCache.size > 500) htmlCache.clear();
     htmlCache.set(src, html);
   }
