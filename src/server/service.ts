@@ -768,7 +768,7 @@ export class Margin {
 
   private requireThread(tid: number): ThreadRow {
     const t = Number.isInteger(tid) ? this.store.getThread(tid) : null;
-    if (!t) throw notFound(`Thread ${tid} not found.`);
+    if (!t) throw notFound(`Thread ${tid} not found. It may have been deleted. Run \`margin threads --all\` to list threads.`);
     return t;
   }
 
@@ -1095,12 +1095,9 @@ export class Margin {
   async wait(agent: string, timeoutMs: number, reviewId: string | null, signal?: AbortSignal): Promise<WaitResponse> {
     if (!agent) throw badRequest('Missing agent name.');
     if (reviewId) this.requireReview(reviewId);
+    if (signal?.aborted) return { threads: [], timedOut: true };
     const now = this.takeDeliverable(agent, reviewId);
-    if (now.length) {
-      for (const t of now) this.emitThread(t.id);
-      this.refreshPresence();
-      return { threads: await this.buildAgentThreads(now), timedOut: false };
-    }
+    if (now.length) return this.handOver(agent, now, signal);
     const since = nowIso();
     const rows = await new Promise<ThreadRow[] | null>((resolve) => {
       let done = false;
@@ -1118,14 +1115,47 @@ export class Margin {
       };
       const w: Waiter = { agent, reviewId, since, deliver: (r) => finish(r) };
       const timer = setTimeout(() => finish(null, true), timeoutMs);
-      signal?.addEventListener('abort', () => finish(null));
+      signal?.addEventListener('abort', () => finish(null), { once: true });
       this.waiters.add(w);
       this.refreshPresence();
     });
     this.refreshPresence();
     if (!rows || !rows.length) return { threads: [], timedOut: true };
+    return this.handOver(agent, rows, signal);
+  }
+
+  /**
+   * Builds the response for claimed threads. When the agent went away meanwhile (Ctrl-C, a
+   * killed shell, a tool timeout), nobody will see them: the claims are given back at once
+   * instead of blocking the threads for the claim timeout.
+   */
+  private async handOver(agent: string, rows: ThreadRow[], signal?: AbortSignal): Promise<WaitResponse> {
     for (const t of rows) this.emitThread(t.id);
-    return { threads: await this.buildAgentThreads(rows), timedOut: false };
+    this.refreshPresence();
+    let threads: AgentThread[];
+    try {
+      threads = await this.buildAgentThreads(rows);
+    } catch (e) {
+      this.unclaim(agent, rows);
+      throw e;
+    }
+    if (signal?.aborted) {
+      this.unclaim(agent, rows);
+      return { threads: [], timedOut: true };
+    }
+    return { threads, timedOut: false };
+  }
+
+  /** Gives back claims taken by one hand-over, unless something changed them since. */
+  unclaim(agent: string, rows: ThreadRow[]): void {
+    for (const r of rows) {
+      const cur = this.store.getThread(r.id);
+      if (!cur || cur.claimedBy !== agent || cur.claimedAt !== r.claimedAt) continue;
+      this.store.updateThread(r.id, { claimedBy: null, claimedAt: null, deliveredUpTo: 0 });
+      this.emitThread(r.id);
+    }
+    this.wakeWaiters();
+    this.refreshPresence();
   }
 
   private wakeWaiters(): void {

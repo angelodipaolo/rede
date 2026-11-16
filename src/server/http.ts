@@ -224,6 +224,7 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
         try {
           const r = await margin.wait(agent, timeout * 1000, q.get('review') || null, ac.signal);
           if (!res.destroyed) sendJson(res, 200, r);
+          else if (r.threads.length) margin.unclaim(agent, r.threads.map((t) => margin.store.getThread(t.thread.id)!).filter(Boolean));
         } finally {
           activity();
         }

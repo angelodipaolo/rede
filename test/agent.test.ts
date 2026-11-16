@@ -80,6 +80,25 @@ describe('agent state, wait, claims and redelivery', () => {
     expect(again.threads[0]!.thread.messages.map((x) => x.body)).toEqual(['Question?', 'And also?']);
   });
 
+  it('gives the claim back when the waiting agent disconnects before it gets the threads', async () => {
+    await setup();
+    const t = await ask();
+    const ac = new AbortController();
+    const p = m.wait('claude', 1000, null, ac.signal);
+    ac.abort(); // e.g. Ctrl-C while the response is being built
+    expect(await p).toEqual({ threads: [], timedOut: true });
+    expect((await m.getThread(t.id)).agentState).toBe('pending');
+    expect((await m.wait('codex', 100, null)).threads.map((x) => x.thread.id)).toEqual([t.id]);
+  });
+
+  it('does not register a waiter for an already closed connection', async () => {
+    await setup();
+    const ac = new AbortController();
+    ac.abort();
+    expect(await m.wait('claude', 60_000, null, ac.signal)).toEqual({ threads: [], timedOut: true });
+    expect(m.waiterCount).toBe(0);
+  });
+
   it('release gives claimed threads back at once', async () => {
     await setup();
     const t = await ask();
@@ -90,11 +109,11 @@ describe('agent state, wait, claims and redelivery', () => {
   });
 
   it('expired claims become pending again', async () => {
-    await setup({ claimTimeoutMs: 150 });
+    await setup({ claimTimeoutMs: 600 });
     const t = await ask();
     await m.wait('claude', 100, null);
     expect((await m.getThread(t.id)).agentState).toBe('working');
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 750));
     expect((await m.getThread(t.id)).agentState).toBe('pending');
     expect((await m.wait('codex', 100, null)).threads).toHaveLength(1);
   });
