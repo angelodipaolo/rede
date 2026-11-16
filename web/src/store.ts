@@ -773,7 +773,45 @@ function saveDrafts() {
   }, 250);
 }
 
+/**
+ * Another tab on the same review saved its drafts. Merge them, so this tab's next save
+ * does not drop drafts it never saw, and drop drafts the other tab posted or discarded.
+ */
+function onDraftsStorage(e: StorageEvent) {
+  if (e.key !== `margin:composers:${S.reviewId}`) return;
+  const parse = (v: string | null): ComposerState[] => {
+    try {
+      return v ? (JSON.parse(v) as ComposerState[]).filter((c) => c && c.key) : [];
+    } catch {
+      return [];
+    }
+  };
+  const next = new Map(parse(e.newValue).map((c) => [c.key, c]));
+  const before = new Map(parse(e.oldValue).map((c) => [c.key, c]));
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-composer]')?.dataset.composer;
+  let changed = false;
+  for (const [k, c] of next) {
+    const mine = S.composers.get(k);
+    if (!mine) {
+      S.composers.set(k, { ...c, hidden: true });
+      changed = true;
+    } else if (k !== focused && mine.text !== c.text && before.get(k)?.text === mine.text) {
+      mine.text = c.text;
+      changed = true;
+    }
+  }
+  for (const [k, old] of before) {
+    const mine = S.composers.get(k);
+    if (!next.has(k) && mine && k !== focused && mine.text === old.text) {
+      S.composers.delete(k);
+      changed = true;
+    }
+  }
+  if (changed) preserveScroll(() => emit('composers', ...[...S.fileByPath.keys()].map(fileTopic)));
+}
+
 export function restoreDrafts() {
+  window.addEventListener('storage', onDraftsStorage);
   const raw = lsGet(`margin:composers:${S.reviewId}`);
   if (!raw) return;
   try {
