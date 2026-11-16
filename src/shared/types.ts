@@ -88,6 +88,12 @@ export interface DiffFile {
   fingerprint: string;
   /** True when the user marked the file as viewed and the fingerprint did not change since. */
   viewed: boolean;
+  /**
+   * True when the user marked the file as viewed, and the file's diff changed after that.
+   * `viewed` is false in this case. The UI shows a "changed since viewed" badge and can
+   * request only the new changes with GET /api/reviews/:id/since-viewed.
+   */
+  changedSinceViewed: boolean;
   /** Total line count of each side. Lets the UI expand context. 0 when the side does not exist. */
   oldLineCount: number;
   newLineCount: number;
@@ -187,6 +193,7 @@ export interface AgentPresence {
  * POST /api/reviews            OpenReviewRequest   -> ReviewSummary   (create or reuse)
  * GET  /api/reviews/:id                    -> Review   (recomputes the diff, re-anchors threads)
  * GET  /api/reviews/:id/file?path=&side=   -> FileContent   (full text of one side)
+ * GET  /api/reviews/:id/since-viewed?path= -> SinceViewed   (what changed in one file after the user marked it viewed)
  * PUT  /api/reviews/:id/viewed  SetViewedRequest   -> { ok: true }
  * POST /api/reviews/:id/threads CreateThreadRequest -> Thread
  * GET  /api/threads/:tid                   -> Thread
@@ -217,6 +224,17 @@ export interface FileContent {
   exists: boolean;
   binary: boolean;
   text: string;
+}
+
+/**
+ * Incremental review. The server snapshots the file content when the user marks it viewed.
+ * `file` is a diff from that snapshot (old side) to the current content (new side).
+ * New-side line numbers match the new side of the main diff. `file` is null when the
+ * server has no snapshot or nothing changed.
+ */
+export interface SinceViewed {
+  path: string;
+  file: DiffFile | null;
 }
 
 export interface SetViewedRequest {
