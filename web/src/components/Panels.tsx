@@ -10,6 +10,18 @@ type Filter = 'open' | 'attn' | 'resolved' | 'all';
 
 const SCOPE_NAME = { all: 'All changes', staged: 'Staged', unstaged: 'Unstaged' } as const;
 
+function shortLoc(s: string, max = 46): string {
+  if (s.length <= max) return s;
+  const parts = s.split('/');
+  let out = parts[parts.length - 1]!;
+  for (let i = parts.length - 2; i >= 0; i--) {
+    const next = `${parts[i]}/${out}`;
+    if (next.length + 2 > max) break;
+    out = next;
+  }
+  return `…/${out}`;
+}
+
 function needsMe(t: Thread) {
   return !t.resolved && t.messages[t.messages.length - 1]?.author.kind === 'agent';
 }
@@ -77,7 +89,7 @@ export function ThreadsPanel() {
           return (
             <button key={t.id} class={`pitem${unread ? ' unread' : ''}${t.resolved ? ' resolved' : ''}`} onClick={() => jumpToThread(t.id)}>
               <div class="pi-top">
-                <span class="pi-loc">{threadLabel(t)}</span>
+                <span class="pi-loc" title={threadLabel(t)}>{shortLoc(threadLabel(t))}</span>
                 {offScope && <span class="badge scope">in {SCOPE_NAME[t.homeScope] ?? t.homeScope}</span>}
                 {(t.outdated || gone) && <span class="badge outdated">Outdated</span>}
                 {t.noteOnly && <span class="badge note">Note</span>}

@@ -50,6 +50,10 @@ function DiffColumn() {
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
+  useEffect(() => {
+    if ((!S.current || !S.fileByPath.has(S.current)) && S.files.length) setCurrent(S.files[0]!.path);
+  });
+
   const r = S.review;
   return (
     <main class="diffcol" ref={ref}>

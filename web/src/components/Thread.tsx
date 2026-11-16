@@ -257,7 +257,7 @@ export function Composer({ ck }: { ck: string }) {
       : null;
 
   return (
-    <div class={`composer k-${c.kind}`} data-composer={ck}>
+    <div class={`composer k-${c.kind}`} data-composer={ck} data-k={`cmp:${ck}`}>
       {title && <div class="cmp-title">{title}</div>}
       <textarea
         ref={taRef}

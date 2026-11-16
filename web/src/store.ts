@@ -35,6 +35,8 @@ export interface ComposerState {
   scope: ReviewScope;
   path: string;
   anchor?: Anchor;
+  /** Text of the anchored end line when the draft was opened; lets the draft follow moved code. */
+  lineText?: string;
   threadId?: number;
   messageId?: number;
   text: string;
@@ -162,6 +164,7 @@ export function setSidebar(w: number | null, hidden?: boolean) {
 interface ScrollAnchor {
   path: string | null;
   key: string | null;
+  text: string | null;
   top: number;
   cardTop: number;
 }
@@ -170,6 +173,15 @@ function captureAnchor(): ScrollAnchor | null {
   const sc = S.scroller;
   if (!sc) return null;
   const r = sc.getBoundingClientRect();
+  // A focused draft on screen is what the reader is looking at.
+  const act = document.activeElement as HTMLElement | null;
+  const cmp = act?.closest<HTMLElement>('[data-composer]');
+  if (cmp && sc.contains(cmp)) {
+    const cr = cmp.getBoundingClientRect();
+    const card = cmp.closest<HTMLElement>('[data-path]');
+    if (card && cr.bottom > r.top && cr.top < r.bottom)
+      return { path: card.dataset.path!, key: `cmp:${cmp.dataset.composer}`, text: null, top: cr.top, cardTop: card.getBoundingClientRect().top };
+  }
   // Probe below the sticky file header.
   const ys = [r.top + 60, r.top + 140, r.top + 260];
   for (const y of ys) {
@@ -181,6 +193,7 @@ function captureAnchor(): ScrollAnchor | null {
     return {
       path: card.dataset.path!,
       key: keyed && card.contains(keyed) ? keyed.dataset.k! : null,
+      text: keyed?.querySelector('.c')?.textContent ?? null,
       top: (keyed ?? card).getBoundingClientRect().top,
       cardTop: card.getBoundingClientRect().top,
     };
@@ -198,7 +211,21 @@ function restoreAnchor(a: ScrollAnchor) {
   const card = findCard(a.path);
   if (!card) return;
   if (a.key) {
-    const el = card.querySelector<HTMLElement>(`[data-k="${CSS.escape(a.key)}"]`);
+    let el = card.querySelector<HTMLElement>(`[data-k="${CSS.escape(a.key)}"]`);
+    const m = /^([no])(\d+)$/.exec(a.key);
+    if (m && a.text !== null && el?.querySelector('.c')?.textContent !== a.text) {
+      // Lines moved: find the same code nearby.
+      const base = Number(m[2]);
+      for (let d = 1; d <= 80; d++) {
+        const hit = [base + d, base - d]
+          .map((n) => card.querySelector<HTMLElement>(`[data-k="${m[1]}${n}"]`))
+          .find((x) => x?.querySelector('.c')?.textContent === a.text);
+        if (hit) {
+          el = hit;
+          break;
+        }
+      }
+    }
     if (el) {
       sc.scrollTop += el.getBoundingClientRect().top - a.top;
       return;
@@ -255,6 +282,49 @@ export function isCollapsed(f: DiffFile): boolean {
   return S.collapsed.get(fk(f.path)) ?? defaultCollapsed(f);
 }
 
+/** Orders paths like the file tree: directories before files at each level. */
+export function treeCompare(a: string, b: string): number {
+  const pa = a.split('/');
+  const pb = b.split('/');
+  const n = Math.min(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    if (pa[i] === pb[i]) continue;
+    const aFile = i === pa.length - 1;
+    const bFile = i === pb.length - 1;
+    if (aFile !== bFile) return aFile ? 1 : -1;
+    return pa[i]!.localeCompare(pb[i]!);
+  }
+  return pa.length - pb.length;
+}
+
+/** Text of one line from the diff hunks or the loaded content, if known. */
+export function lineTextAt(f: DiffFile, side: Side, line: number): string | null {
+  for (const h of f.hunks)
+    for (const l of h.lines) if ((side === 'old' ? l.oldLine : l.newLine) === line && (side === 'old' ? l.type !== 'add' : l.type !== 'del')) return l.text;
+  const c = S.contents.get(fk(f.path));
+  const arr = c ? (side === 'old' ? c.old : c.new) : null;
+  return arr?.[line - 1] ?? null;
+}
+
+/** After a live diff change, moves open comment drafts with the code they were written on. */
+function shiftComposers(f: DiffFile) {
+  for (const c of S.composers.values()) {
+    const a = c.anchor;
+    if (c.kind !== 'new' || c.path !== f.path || c.scope !== S.scope || !a || a.endLine === null || !c.lineText) continue;
+    if (lineTextAt(f, a.side, a.endLine) === c.lineText) continue;
+    let best: number | null = null;
+    for (const h of f.hunks)
+      for (const l of h.lines) {
+        const ln = a.side === 'old' ? (l.type !== 'add' ? l.oldLine : undefined) : l.type !== 'del' ? l.newLine : undefined;
+        if (ln === undefined || l.text !== c.lineText) continue;
+        if (best === null || Math.abs(ln - a.endLine) < Math.abs(best - a.endLine)) best = ln;
+      }
+    if (best === null) continue;
+    const d = best - a.endLine;
+    c.anchor = { ...a, startLine: a.startLine! + d, endLine: best };
+  }
+}
+
 /** Applies a review response. Keeps file objects whose fingerprint did not change. */
 function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
   const prevFiles = S.fileByPath;
@@ -279,10 +349,11 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
       if (old && opts.flash) flashed.push(nf.path);
       if (old && old.fingerprint !== nf.fingerprint) {
         S.since.delete(fk(nf.path));
-        S.expansions.delete(fk(nf.path));
+        shiftComposers(nf);
       }
     }
   }
+  files.sort((a, b) => treeCompare(a.path, b.path));
   const listChanged =
     opts.initial || files.length !== S.files.length || files.some((f, i) => S.files[i]?.path !== f.path);
   if (opts.flash) for (const f of files) if (!prevFiles.has(f.path) && prevFiles.size) flashed.push(f.path);
@@ -557,7 +628,7 @@ export async function createThread(c: ComposerState, noteOnly: boolean): Promise
 }
 
 export async function reply(tid: number, body: string, resolve = false): Promise<boolean> {
-  const t = await guard(api.addMessage(tid, { body, author: HUMAN, resolve }), 'Reply');
+  const t = await guard(api.addMessage(tid, S.scope, { body, author: HUMAN, resolve }), 'Reply');
   if (!t) return false;
   markRead(tid);
   preserveScroll(() => upsertThread(t, { quiet: true, reindex: true }));
@@ -565,7 +636,7 @@ export async function reply(tid: number, body: string, resolve = false): Promise
 }
 
 export async function setResolved(tid: number, resolved: boolean) {
-  const t = await guard(api.updateThread(tid, { resolved }), resolved ? 'Resolve' : 'Unresolve');
+  const t = await guard(api.updateThread(tid, S.scope, { resolved }), resolved ? 'Resolve' : 'Unresolve');
   if (!t) return;
   markRead(tid);
   S.openResolved.delete(tid);
@@ -573,14 +644,14 @@ export async function setResolved(tid: number, resolved: boolean) {
 }
 
 export async function editMessage(mid: number, body: string): Promise<boolean> {
-  const t = await guard(api.editMessage(mid, body), 'Edit');
+  const t = await guard(api.editMessage(mid, S.scope, body), 'Edit');
   if (!t) return false;
   preserveScroll(() => upsertThread(t, { quiet: true, reindex: true }));
   return true;
 }
 
 export async function deleteMessage(tid: number, mid: number) {
-  const res = await guard(api.deleteMessage(mid), 'Delete');
+  const res = await guard(api.deleteMessage(mid, S.scope), 'Delete');
   if (!res) return;
   preserveScroll(() => {
     if ('threadDeleted' in res) removeThread(tid);
@@ -686,8 +757,10 @@ export function closeComposer(key: string) {
 export function commentOn(path: string, side: Side, start: number, end: number) {
   const anchor: Anchor = { path, side, startLine: Math.min(start, end), endLine: Math.max(start, end) };
   const key = composerKeyFor(anchor);
-  if (isCollapsed(S.fileByPath.get(path)!)) setCollapsed(path, false);
-  openComposer({ key, kind: 'new', scope: S.scope, path, anchor });
+  const f = S.fileByPath.get(path)!;
+  if (isCollapsed(f)) setCollapsed(path, false);
+  const lineText = lineTextAt(f, side, anchor.endLine!) ?? undefined;
+  openComposer({ key, kind: 'new', scope: S.scope, path, anchor, lineText });
 }
 
 export function commentOnFile(path: string) {

@@ -53,12 +53,14 @@ export const api = {
     call<{ ok: true }>('PUT', `/api/reviews/${enc(id)}/viewed?${sc(scope)}`, { path, viewed }),
   createThread: (id: string, scope: ReviewScope, req: CreateThreadRequest) =>
     call<Thread>('POST', `/api/reviews/${enc(id)}/threads?${sc(scope)}`, req),
-  updateThread: (tid: number, req: UpdateThreadRequest) => call<Thread>('PATCH', `/api/threads/${tid}`, req),
+  updateThread: (tid: number, scope: ReviewScope, req: UpdateThreadRequest) =>
+    call<Thread>('PATCH', `/api/threads/${tid}?${sc(scope)}`, req),
   deleteThread: (tid: number) => call<{ ok: true }>('DELETE', `/api/threads/${tid}`),
-  addMessage: (tid: number, req: AddMessageRequest) =>
-    call<Thread>('POST', `/api/threads/${tid}/messages`, req),
-  editMessage: (mid: number, body: string) => call<Thread>('PATCH', `/api/messages/${mid}`, { body }),
-  deleteMessage: (mid: number) =>
-    call<Thread | { ok: true; threadDeleted: true }>('DELETE', `/api/messages/${mid}`),
+  addMessage: (tid: number, scope: ReviewScope, req: AddMessageRequest) =>
+    call<Thread>('POST', `/api/threads/${tid}/messages?${sc(scope)}`, req),
+  editMessage: (mid: number, scope: ReviewScope, body: string) =>
+    call<Thread>('PATCH', `/api/messages/${mid}?${sc(scope)}`, { body }),
+  deleteMessage: (mid: number, scope: ReviewScope) =>
+    call<Thread | { ok: true; threadDeleted: true }>('DELETE', `/api/messages/${mid}?${sc(scope)}`),
   eventsUrl: (id: string, scope: ReviewScope) => `/api/reviews/${enc(id)}/events?${sc(scope)}`,
 };
