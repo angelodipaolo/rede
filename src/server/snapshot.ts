@@ -2,6 +2,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gitBuffer, gitLine } from './git.ts';
 
+/**
+ * Copies an index file and keeps its mtime. git treats an entry as "racily clean" (and
+ * compares content) when the file's mtime is not older than the index file's mtime. A copy
+ * with a fresh mtime would hide edits made in the same second as the last write of the real
+ * index when the size did not change.
+ */
+export function copyIndex(from: string, to: string): void {
+  const st = fs.statSync(from);
+  fs.copyFileSync(from, to);
+  fs.utimesSync(to, st.atime, st.mtime);
+}
+
 /** One promise chain per index file, so two snapshots never race on the same index lock. */
 const chains = new Map<string, Promise<unknown>>();
 
@@ -50,6 +62,17 @@ export class WorkingSnapshotter {
     });
   }
 
+  /** Drops the private index. The next snapshot starts from a copy of the real index. */
+  reset(): Promise<void> {
+    return serialize(this.indexFile, async () => {
+      try {
+        fs.unlinkSync(this.indexFile);
+      } catch {
+        /* already gone */
+      }
+    });
+  }
+
   private async run(): Promise<string> {
     fs.mkdirSync(path.dirname(this.indexFile), { recursive: true });
     this.clearStaleLock();
@@ -59,7 +82,7 @@ export class WorkingSnapshotter {
       // so a plain copy reads a consistent file.
       const real = path.join(this.gitDir, 'index');
       try {
-        fs.copyFileSync(real, this.indexFile);
+        copyIndex(real, this.indexFile);
       } catch {
         /* no index yet (new repo): git add starts from empty */
       }
@@ -115,7 +138,7 @@ export class IndexTreeReader {
     const key = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}:${headTree}`;
     if (this.last?.key === key) return this.last.tree;
     fs.mkdirSync(path.dirname(this.copyFile), { recursive: true });
-    fs.copyFileSync(real, this.copyFile);
+    copyIndex(real, this.copyFile);
     const env = { GIT_INDEX_FILE: this.copyFile };
     let tree: string;
     try {

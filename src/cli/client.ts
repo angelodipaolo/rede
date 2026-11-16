@@ -52,6 +52,34 @@ export function request<T>(port: number, method: string, urlPath: string, body?:
   });
 }
 
+/** GET that pipes the response body to a writable stream (for large plain-text responses). */
+export function streamTo(port: number, urlPath: string, out: NodeJS.WritableStream): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method: 'GET', path: urlPath }, (res) => {
+      if ((res.statusCode ?? 500) >= 400) {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let msg = text || `HTTP ${res.statusCode}`;
+          try {
+            msg = (JSON.parse(text) as { error?: string }).error ?? msg;
+          } catch {
+            /* not JSON */
+          }
+          reject(new ApiFailure(res.statusCode ?? 500, msg));
+        });
+        return;
+      }
+      res.on('error', reject);
+      res.on('end', () => resolve());
+      res.pipe(out, { end: false });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 async function healthy(repo: RepoPaths, info: ServerInfo | null): Promise<boolean> {
   if (!info) return false;
   try {

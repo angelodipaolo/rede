@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { diffTrees, parseChunk, parseNumstatZ, parseRawZ, splitPatch } from '../src/server/diff.ts';
+import { diffHunks, diffMeta, diffTrees, parseChunk, parseNumstatZ, parseRawNumstatZ, parseRawZ, quotePath, splitPatch } from '../src/server/diff.ts';
 import { lines, TempRepo } from './helpers.ts';
 
 describe('parseChunk', () => {
@@ -53,6 +53,16 @@ describe('parseChunk', () => {
   it('splits multi-file patches only at line starts', () => {
     const chunks = splitPatch('diff --git a/a b/a\n@@ -1 +1 @@\n-diff --git x\n+y\ndiff --git a/b b/b\n');
     expect(chunks).toHaveLength(2);
+  });
+
+  it('quotes paths like git does in patch headers', () => {
+    expect(quotePath('a/plain ü.txt')).toBe('a/plain ü.txt');
+    expect(quotePath('a/q"t\\b\t\n\x01')).toBe('"a/q\\"t\\\\b\\t\\n\\001"');
+  });
+
+  it('parses combined raw and numstat output', () => {
+    const out = ':100644 100644 aaa bbb M\0f.txt\0:100644 100644 ccc ddd R090\0old\0new\0' + '1\t2\tf.txt\0-\t-\t\0old\0new\0';
+    expect(parseRawNumstatZ(out).map((x) => [x.e.newPath, x.num])).toEqual([['f.txt', [1, 2]], ['new', null]]);
   });
 
   it('parses raw and numstat -z output including renames', () => {
@@ -107,6 +117,42 @@ describe('diffTrees', () => {
     expect(by['new empty']).toMatchObject({ status: 'added', hunks: [], newLineCount: 0 });
     expect(by['ünï/cødé.ts']).toMatchObject({ status: 'added', additions: 1, newLineCount: 1 });
     for (const f of files) expect(f.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('keeps hunks with their file after a type change (file -> symlink gives two patch chunks)', async () => {
+    repo = new TempRepo();
+    repo.write('afile', 'a\nb\n');
+    repo.write('target', 'x\n');
+    repo.write('zlater.txt', '1\n2\n3\n');
+    repo.commit();
+    const a = repo.git('rev-parse', 'HEAD^{tree}').trim();
+    repo.rm('afile');
+    fs.symlinkSync('target', path.join(repo.dir, 'afile'));
+    repo.write('zlater.txt', '1\nTWO\n3\n');
+    repo.git('add', '-A');
+    const b = repo.git('write-tree').trim();
+    const by = Object.fromEntries((await diffTrees(repo.dir, a, b)).map((f) => [f.path, f]));
+    const text = (p: string) => by[p]!.hunks.flatMap((h) => h.lines.map((l) => `${l.type[0]}${l.text}`));
+    expect(text('afile')).toEqual(['da', 'db', 'atarget']);
+    expect(text('zlater.txt')).toEqual(['c1', 'd2', 'aTWO', 'c3']);
+  });
+
+  it('finds the hunks of quoted paths and loads hunks for a subset of files', async () => {
+    repo = new TempRepo();
+    const names = ['q"uote.txt', 'tab\there.txt', 'nl\nhere.txt', 'back\\slash.txt', '-dash.txt', 'sp ace.txt', 'ünï.txt'];
+    for (const n of names) repo.write(n, 'x\n');
+    repo.commit();
+    const a = repo.git('rev-parse', 'HEAD^{tree}').trim();
+    names.forEach((n, i) => repo.write(n, `x\nadded ${i}\n`));
+    repo.git('add', '-A');
+    const b = repo.git('write-tree').trim();
+    const meta = await diffMeta(repo.dir, a, b);
+    expect(meta.map((f) => f.path).sort()).toEqual([...names].sort());
+    for (const f of meta) expect(f).toMatchObject({ additions: 1, deletions: 0, oldLineCount: 1, newLineCount: 2 });
+    expect('hunks' in meta[0]!).toBe(false);
+    const some = await diffHunks(repo.dir, a, b, meta.filter((f) => f.path !== 'sp ace.txt'));
+    expect(some).toHaveLength(names.length - 1);
+    for (const f of some) expect(f.hunks.flatMap((h) => h.lines).find((l) => l.type === 'add')?.text).toBe(`added ${names.indexOf(f.path)}`);
   });
 
   it('marks huge files as tooLarge and omits hunks', async () => {

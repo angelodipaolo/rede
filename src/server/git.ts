@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 
 /** The empty tree. Used as the old side of a root commit or a repo without commits. */
@@ -35,12 +35,42 @@ const BASE_CONFIG = [
   '-c', 'core.pager=cat',
 ];
 
+/**
+ * Extra environment per repository root. Margin uses it to send the objects that snapshots
+ * write to a private object directory (see useObjectStore).
+ */
+const repoEnv = new Map<string, Record<string, string>>();
+
+/**
+ * Makes every git command that runs in `root` write new objects to `objectsDir` and read
+ * the repository's own objects as an alternate. Snapshots then never add loose objects to
+ * the user's object store. Pass null to undo.
+ */
+export function useObjectStore(root: string, objectsDir: string | null, repoObjects?: string): void {
+  if (!objectsDir) {
+    repoEnv.delete(root);
+    return;
+  }
+  repoEnv.set(root, { GIT_OBJECT_DIRECTORY: objectsDir, GIT_ALTERNATE_OBJECT_DIRECTORIES: repoObjects ?? path.join(root, '.git', 'objects') });
+}
+
+function envFor(opts: GitOptions): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...repoEnv.get(opts.cwd), ...opts.env };
+}
+
+/** Starts git with stdout piped, for streaming. */
+export function gitStream(args: string[], opts: GitOptions): ChildProcess {
+  const child = spawn('git', [...BASE_CONFIG, ...args], { cwd: opts.cwd, env: envFor(opts), stdio: ['ignore', 'pipe', 'ignore'] });
+  child.on('error', () => {});
+  return child;
+}
+
 /** Runs git and returns stdout as a Buffer. */
 export function gitBuffer(args: string[], opts: GitOptions): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', [...BASE_CONFIG, ...args], {
       cwd: opts.cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', ...opts.env },
+      env: envFor(opts),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const out: Buffer[] = [];
@@ -178,9 +208,15 @@ export async function catFileBatch(cwd: string, ids: string[]): Promise<Map<stri
   return result;
 }
 
-/** Writes a ref so that `git gc` keeps an object alive. */
-export async function updateRef(cwd: string, ref: string, id: string): Promise<void> {
-  await git(['update-ref', ref, id], { cwd });
+/** Returns the ids that do not exist in the object store. */
+export async function missingObjects(cwd: string, ids: string[]): Promise<string[]> {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return [];
+  const out = await git(['cat-file', '--batch-check'], { cwd, input: unique.join('\n') + '\n' });
+  return out
+    .split('\n')
+    .filter((l) => l.endsWith(' missing'))
+    .map((l) => l.slice(0, l.indexOf(' ')));
 }
 
 export async function hashObject(cwd: string, content: string | Buffer): Promise<string> {

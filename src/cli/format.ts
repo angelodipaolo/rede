@@ -98,6 +98,7 @@ export function fileToUnified(f: DiffFile): string {
   return out.join('\n');
 }
 
+/** The header of `margin diff`, plus the file list with --stat. The patch itself is streamed after it. */
 export function formatDiff(r: Review, stat: boolean): string {
   const out: string[] = [];
   out.push(`# Review ${r.id}: ${r.title}`);
@@ -118,6 +119,5 @@ export function formatDiff(r: Review, stat: boolean): string {
     out.push(`${r.files.length} files changed, +${add} -${del}`);
     return out.join('\n');
   }
-  for (const f of r.files) out.push(fileToUnified(f));
   return out.join('\n');
 }

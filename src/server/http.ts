@@ -3,6 +3,8 @@ import http from 'node:http';
 import path from 'node:path';
 import type { ReviewScope, ServerEvent } from '../shared/types.ts';
 import { badRequest, HttpError, notFound } from './errors.ts';
+import { patchArgs } from './diff.ts';
+import { gitStream } from './git.ts';
 import type { Margin } from './service.ts';
 
 export interface HttpOptions {
@@ -155,6 +157,20 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
       }
       case 'GET reviews/:id':
         return sendJson(res, 200, await margin.getReview(seg[1]!, parseScope(q.get('scope'))));
+      case 'POST reviews/:id/hunks': {
+        const body = await readJson(req);
+        return sendJson(res, 200, await margin.hunks(seg[1]!, parseScope(q.get('scope')), body?.paths));
+      }
+      case 'GET reviews/:id/patch': {
+        // Not part of the browser contract: the CLI streams the plain patch (`margin diff`).
+        const [from, to] = await margin.scopeTreesOf(seg[1]!, parseScope(q.get('scope')));
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        if (from === to) return void res.end();
+        const child = gitStream(patchArgs(from, to), { cwd: margin.cwd });
+        res.on('close', () => child.kill());
+        child.stdout!.pipe(res);
+        return;
+      }
       case 'GET reviews/:id/file': {
         const fp = q.get('path');
         if (!fp) throw badRequest('Missing path.');

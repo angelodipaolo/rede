@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { diffTrees } from '../src/server/diff.ts';
 import { IndexTreeReader, WorkingSnapshotter } from '../src/server/snapshot.ts';
-import { TempRepo } from './helpers.ts';
+import { lines, makeMargin, TempRepo } from './helpers.ts';
 
 describe('working tree snapshot', () => {
   let repo: TempRepo;
@@ -55,6 +55,39 @@ describe('working tree snapshot', () => {
     expect(fs.readFileSync(indexFile).equals(before)).toBe(true);
     expect(repo.git('status', '--porcelain')).toBe(statusBefore);
     expect(repo.read('keep.txt')).toBe('changed\n');
+  });
+
+  it('sees a same-size edit made in the same second as the last index write', async () => {
+    // Regression: the private index was a copy with a fresh mtime, so git trusted stale stat data.
+    const { snap } = setup();
+    repo.write('keep.txt', 'KEEP\n'); // same size as "keep\n"
+    await new Promise((r) => setTimeout(r, 1100));
+    const tree = await snap.snapshot();
+    const headTree = repo.git('rev-parse', 'HEAD^{tree}').trim();
+    expect(repo.git('diff-tree', '-r', '--name-only', headTree, tree)).toContain('keep.txt');
+  });
+
+  it('writes snapshot objects to a private object directory, not to the repository', async () => {
+    repo = new TempRepo();
+    repo.write('a.ts', lines(50));
+    repo.commit();
+    const m = await makeMargin(repo);
+    try {
+      await m.openReview({ kind: 'working' });
+      const loose = () => Number(/^count: (\d+)/m.exec(repo.git('count-objects', '-v'))![1]);
+      const before = loose();
+      for (let i = 0; i < 20; i++) {
+        repo.write('a.ts', lines(50) + `edit ${i}\n`);
+        repo.write(`new/${i}.ts`, `new ${i}\n`);
+        const r = await m.getReview('working');
+        expect(r.files).toHaveLength(2 + i);
+      }
+      expect(loose()).toBe(before);
+      const [f] = await m.hunks('working', 'all', ['a.ts']);
+      expect(f!.hunks.flatMap((h) => h.lines).some((l) => l.text === 'edit 19')).toBe(true);
+    } finally {
+      m.close();
+    }
   });
 
   it('returns the same tree when nothing changed and a new one after an edit', async () => {

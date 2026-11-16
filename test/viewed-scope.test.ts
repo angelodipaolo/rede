@@ -42,7 +42,8 @@ describe('viewed state', () => {
       { type: 'add', newLine: 30, text: 'line thirty' },
     ]);
     // New-side numbers match the main diff.
-    const main = f.hunks.flatMap((h) => h.lines).find((l) => l.type === 'add' && l.text === 'line thirty');
+    const [withHunks] = await m.hunks('working', 'all', ['a.ts']);
+    const main = withHunks!.hunks.flatMap((h) => h.lines).find((l) => l.type === 'add' && l.text === 'line thirty');
     expect(main?.newLine).toBe(30);
 
     await m.setViewed('working', 'all', 'a.ts', true);

@@ -14,7 +14,7 @@ import type {
 } from '../shared/types.ts';
 import { VERSION } from '../server/errors.ts';
 import { currentBranch, defaultBranch, discoverRepo, git, type RepoPaths } from '../server/git.ts';
-import { ApiFailure, ensureServer, findServer, request, stopServer } from './client.ts';
+import { ApiFailure, ensureServer, findServer, request, stopServer, streamTo } from './client.ts';
 import { formatAgentThread, formatDiff, formatThreadLine, location } from './format.ts';
 import { GUIDE, setup } from './guide.ts';
 
@@ -328,6 +328,9 @@ async function cmdDiff(args: Args): Promise<void> {
   const r = await api<Review>(c, 'GET', `/api/reviews/${enc(id)}?scope=${scopeOf(args)}`);
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
   out(formatDiff(r, has(args, '--stat')));
+  if (has(args, '--stat')) return;
+  // The patch is streamed as git prints it: no per-file parsing, constant memory.
+  await streamTo(c.port, `/api/reviews/${enc(id)}/patch?scope=${scopeOf(args)}`, process.stdout);
 }
 
 function cmdSetup(): void {

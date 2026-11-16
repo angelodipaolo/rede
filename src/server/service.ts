@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type {
   AddMessageRequest,
   AgentPresence,
@@ -24,14 +26,17 @@ import { capture, reanchor, splitLines } from './anchor.ts';
 import {
   countLines,
   diffBlobs,
-  diffTrees,
+  diffHunks,
+  diffMeta,
   fileFingerprint,
   fingerprintOfRaw,
   MAX_FILE_BYTES,
   publicFile,
+  publicMeta,
   rawDiff,
   sha1,
   type FileDiff,
+  type FileMeta,
   type RawEntry,
 } from './diff.ts';
 import { badRequest, HttpError, notFound } from './errors.ts';
@@ -44,7 +49,9 @@ import {
   headCommit,
   marginDir,
   mergeBase,
+  missingObjects,
   resolveCommit,
+  useObjectStore,
   treeOf,
   type RepoPaths,
 } from './git.ts';
@@ -99,6 +106,33 @@ interface Waiter {
 
 const nowIso = () => new Date().toISOString();
 
+/** Loose objects in Margin's private object directory above which it is emptied at start. */
+const PRIVATE_OBJECTS_MAX = 20_000;
+
+/**
+ * Sets up Margin's private object directory (<margin dir>/objects). Snapshots write their
+ * blobs and trees there, never into the repository's object store, so a review that polls a
+ * changing working tree adds no loose objects to the repository and never triggers its auto gc.
+ * Nothing in the repository refers to these objects, so Margin can delete them: at start, when
+ * there are many, it empties the directory together with the private index files that point
+ * into it. Must run before any snapshot (no in-memory state refers to old objects yet).
+ */
+function prepareObjectStore(repo: RepoPaths, dir: string): void {
+  const objects = path.join(dir, 'objects');
+  let count = 0;
+  try {
+    for (const sub of fs.readdirSync(objects)) if (/^[0-9a-f]{2}$/.test(sub)) count += fs.readdirSync(path.join(objects, sub)).length;
+  } catch {
+    /* not there yet */
+  }
+  if (count > PRIVATE_OBJECTS_MAX) {
+    fs.rmSync(objects, { recursive: true, force: true });
+    for (const f of ['snapshot.index', 'staged.index']) fs.rmSync(path.join(dir, f), { force: true });
+  }
+  fs.mkdirSync(objects, { recursive: true });
+  useObjectStore(repo.root, objects, path.join(repo.commonDir, 'objects'));
+}
+
 function displayPath(e: RawEntry): string {
   return e.status === 'D' ? e.oldPath : e.newPath;
 }
@@ -142,6 +176,11 @@ export class Margin {
 
   private states = new Map<string, ReviewState>();
   private computeChains = new Map<string, Promise<unknown>>();
+  /** A computation that is queued and not started yet. Callers that arrive meanwhile share it. */
+  private computeQueued = new Map<string, Promise<ReviewState>>();
+  /** Working-tree blob ids known to exist (see snapshotObjectsExist). */
+  private verified = new Set<string>();
+  private packStamp = '';
   private anchoredKey = new Map<string, string>();
   private subscribers = new Set<Subscriber>();
   private pollers = new Map<string, { timer: NodeJS.Timeout; busy: boolean }>();
@@ -161,6 +200,7 @@ export class Margin {
     this.pollMs = opts.pollMs ?? 2000;
     this.lingerMs = opts.presenceLingerMs ?? 5000;
     const dir = marginDir(opts.repo);
+    prepareObjectStore(opts.repo, dir);
     this.snapshotter = new WorkingSnapshotter(opts.repo.root, opts.repo.gitDir, dir);
     this.indexReader = new IndexTreeReader(opts.repo.root, opts.repo.gitDir, dir);
     const t = setInterval(() => this.expireClaims(), Math.min(10_000, Math.max(200, this.claimTimeoutMs / 4)));
@@ -170,6 +210,7 @@ export class Margin {
 
   close(): void {
     this.closed = true;
+    useObjectStore(this.repo.root, null);
     for (const t of this.timers) clearInterval(t);
     for (const p of this.pollers.values()) clearInterval(p.timer);
     this.pollers.clear();
@@ -313,21 +354,34 @@ export class Margin {
 
   /** Recomputes the state of a review (serialized per review). Re-anchors threads when the trees changed. */
   compute(id: string): Promise<ReviewState> {
+    const queued = this.computeQueued.get(id);
+    if (queued) return queued;
     const prev = this.computeChains.get(id) ?? Promise.resolve();
     const run = async (): Promise<ReviewState> => {
+      this.computeQueued.delete(id);
       const review = this.requireReview(id);
-      const { trees, resolved, scopes } = await this.resolveTrees(review);
-      const raw: ReviewState['raw'] = {};
+      let { trees, resolved, scopes } = await this.resolveTrees(review);
+      let raw: ReviewState['raw'] = {};
       const fingerprints: ReviewState['fingerprints'] = {};
-      await Promise.all(
-        scopes.map(async (sc) => {
-          const sides = SCOPE_SIDES[sc];
-          const tree = (t: Target) => (t === 'index' ? trees.index : trees[t])!;
-          const entries = await rawDiff(this.cwd, tree(sides.old), tree(sides.new));
-          raw[sc] = entries;
-          fingerprints[sc] = fingerprintOfRaw(entries);
-        }),
-      );
+      const diffScopes = async () => {
+        raw = {};
+        await Promise.all(
+          scopes.map(async (sc) => {
+            const sides = SCOPE_SIDES[sc];
+            const tree = (t: Target) => (t === 'index' ? trees.index : trees[t])!;
+            const entries = await rawDiff(this.cwd, tree(sides.old), tree(sides.new));
+            raw[sc] = entries;
+            fingerprints[sc] = fingerprintOfRaw(entries);
+          }),
+        );
+      };
+      await diffScopes();
+      if (resolved.to === null && !(await this.snapshotObjectsExist(raw, scopes))) {
+        // The private index points at objects that git gc removed: rebuild the snapshot once.
+        await this.snapshotter.reset();
+        ({ trees, resolved, scopes } = await this.resolveTrees(review));
+        await diffScopes();
+      }
       const state: ReviewState = {
         review,
         key: [trees.old, trees.index, trees.new].join(':'),
@@ -347,11 +401,44 @@ export class Margin {
       return state;
     };
     const p = prev.then(run, run);
+    this.computeQueued.set(id, p);
     this.computeChains.set(
       id,
       p.catch(() => {}),
     );
     return p;
+  }
+
+  /**
+   * The private snapshot index trusts its stat cache, so it can point at a blob that the
+   * user's `git gc` pruned (content that was staged once and is unreachable now). Checks the
+   * working-tree blobs of the diff. Ids checked once are not checked again until a gc changes
+   * the pack directory.
+   */
+  private async snapshotObjectsExist(raw: ReviewState['raw'], scopes: ReviewScope[]): Promise<boolean> {
+    let stamp = '';
+    try {
+      stamp = String(fs.statSync(path.join(this.repo.commonDir, 'objects', 'pack')).mtimeMs);
+    } catch {
+      /* no pack dir */
+    }
+    if (stamp !== this.packStamp || this.verified.size > 200_000) {
+      this.verified.clear();
+      this.packStamp = stamp;
+    }
+    const ids = new Set<string>();
+    for (const sc of scopes) {
+      if (SCOPE_SIDES[sc].new !== 'new') continue;
+      for (const e of raw[sc] ?? []) {
+        const s = sideOf(e, true);
+        if (s.id && !this.verified.has(s.id) && !e.newMode.startsWith('160')) ids.add(s.id);
+      }
+    }
+    if (!ids.size) return true;
+    const missing = await missingObjects(this.cwd, [...ids]);
+    if (missing.length) return false;
+    for (const id of ids) this.verified.add(id);
+    return true;
   }
 
   /** Cached state when it is fresh enough, else a new computation. */
@@ -372,27 +459,35 @@ export class Margin {
     return [this.treeOfTarget(state, s.old)!, this.treeOfTarget(state, s.new)!];
   }
 
-  async fullFiles(state: ReviewState, scope: ReviewScope): Promise<FileDiff[]> {
+  /** File metadata of one scope (no hunks). Cached per tree pair. */
+  metaFiles(state: ReviewState, scope: ReviewScope): Promise<FileMeta[]> {
     const [a, b] = this.scopeTrees(state, scope);
-    return diffTrees(this.cwd, a, b);
+    return diffMeta(this.cwd, a, b);
+  }
+
+  /** Files with hunks, for some files of one scope. Cached per blob pair. */
+  withHunks(state: ReviewState, scope: ReviewScope, files: FileMeta[]): Promise<FileDiff[]> {
+    const [a, b] = this.scopeTrees(state, scope);
+    return diffHunks(this.cwd, a, b, files);
+  }
+
+  private viewedFlags<T extends { path: string; fingerprint: string }>(f: T, viewed: Map<string, { fingerprint: string }>): { viewed: boolean; changedSinceViewed: boolean } {
+    const v = viewed.get(f.path);
+    return { viewed: !!v && v.fingerprint === f.fingerprint, changedSinceViewed: !!v && v.fingerprint !== f.fingerprint };
   }
 
   async getReview(id: string, scope: ReviewScope = 'all'): Promise<Review> {
-    const state = await this.compute(id);
+    const [state, repo] = await Promise.all([this.compute(id), this.repoInfo()]);
     this.checkScope(state, scope);
     this.store.touchReviewOpened(id, nowIso());
-    const files = await this.fullFiles(state, scope);
+    const files = await this.metaFiles(state, scope);
     const viewed = this.store.viewedOf(id, scope);
-    const out: DiffFile[] = files.map((f) => {
-      const pub = publicFile(f);
-      const v = viewed.get(f.path);
-      return { ...pub, viewed: !!v && v.fingerprint === f.fingerprint, changedSinceViewed: !!v && v.fingerprint !== f.fingerprint };
-    });
+    const out = files.map((f) => ({ ...publicMeta(f), ...this.viewedFlags(f, viewed) }));
     const scopeFileCounts: Review['scopeFileCounts'] = {};
     for (const sc of state.scopes) scopeFileCounts[sc] = state.raw[sc]?.length ?? 0;
     return {
       ...this.summary(this.store.getReview(id)!),
-      repo: await this.repoInfo(),
+      repo,
       scope,
       scopes: state.scopes,
       scopeFileCounts,
@@ -402,6 +497,27 @@ export class Margin {
       threads: this.store.threadsOfReview(id).map((t) => this.toThread(t, scope, state)),
       agents: this.agents(),
     };
+  }
+
+  /** Files with hunks for the given new-side paths. Unknown paths are skipped. */
+  async hunks(id: string, scope: ReviewScope, paths: unknown): Promise<DiffFile[]> {
+    if (!Array.isArray(paths) || paths.some((p) => typeof p !== 'string')) throw badRequest('paths must be an array of strings.');
+    if (paths.length > 200) throw badRequest('At most 200 paths per request.');
+    const state = await this.freshState(id, 1000);
+    this.checkScope(state, scope);
+    const metas = await this.metaFiles(state, scope);
+    const byPath = new Map(metas.map((f) => [f.path, f]));
+    const want = [...new Set(paths as string[])].flatMap((p) => (byPath.has(p) ? [byPath.get(p)!] : []));
+    const files = await this.withHunks(state, scope, want);
+    const viewed = this.store.viewedOf(id, scope);
+    return files.map((f) => ({ ...publicFile(f), ...this.viewedFlags(f, viewed) }));
+  }
+
+  /** The trees of one scope, for streaming the patch. */
+  async scopeTreesOf(id: string, scope: ReviewScope): Promise<[string, string]> {
+    const state = await this.freshState(id, 1000);
+    this.checkScope(state, scope);
+    return this.scopeTrees(state, scope);
   }
 
   private findEntry(state: ReviewState, scope: ReviewScope, p: string): RawEntry | null {
@@ -908,8 +1024,8 @@ export class Margin {
     const thread = this.toThread(t, scope, st);
     let diffContext: string | null = null;
     if (found && !t.outdated && t.startLine !== null && t.endLine !== null && found.id) {
-      const files = await this.fullFiles(st, scope);
-      const f = files.find((x) => x.path === displayPath(found.entry));
+      const meta = (await this.metaFiles(st, scope)).find((x) => x.path === displayPath(found.entry));
+      const f = meta ? (await this.withHunks(st, scope, [meta]))[0] : undefined;
       const lines = await this.blobLines(found.id);
       diffContext = renderDiffContext(f ?? null, found.isNew ? 'new' : 'old', t.startLine, t.endLine, lines);
     }
