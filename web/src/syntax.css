@@ -1,0 +1,113 @@
+/* Syntax colors tuned to stay readable on add/del backgrounds in both themes. */
+:root {
+  --sx-kw: #7a3ec8;
+  --sx-fn: #2257c2;
+  --sx-str: #a24614;
+  --sx-num: #0b7380;
+  --sx-type: #8a5d00;
+  --sx-com: #808790;
+  --sx-attr: #2e6a9a;
+  --sx-tag: #1f7a3a;
+  --sx-var: #b0322a;
+  --sx-meta: #6b7280;
+  --sx-re: #a0306f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --sx-kw: #c4a0ff;
+    --sx-fn: #82aaff;
+    --sx-str: #f0a878;
+    --sx-num: #5ccfc6;
+    --sx-type: #e6c26e;
+    --sx-com: #7d8590;
+    --sx-attr: #8cc4f5;
+    --sx-tag: #7fd99b;
+    --sx-var: #ff9a8f;
+    --sx-meta: #9aa3ad;
+    --sx-re: #f29cc6;
+  }
+}
+:root[data-theme='dark'] {
+  --sx-kw: #c4a0ff;
+  --sx-fn: #82aaff;
+  --sx-str: #f0a878;
+  --sx-num: #5ccfc6;
+  --sx-type: #e6c26e;
+  --sx-com: #7d8590;
+  --sx-attr: #8cc4f5;
+  --sx-tag: #7fd99b;
+  --sx-var: #ff9a8f;
+  --sx-meta: #9aa3ad;
+  --sx-re: #f29cc6;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-template-tag,
+.hljs-literal,
+.hljs-meta .hljs-keyword {
+  color: var(--sx-kw);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section,
+.hljs-selector-id {
+  color: var(--sx-fn);
+}
+.hljs-string,
+.hljs-meta .hljs-string,
+.hljs-template-variable,
+.hljs-addition {
+  color: var(--sx-str);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: var(--sx-num);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-built_in,
+.hljs-selector-class {
+  color: var(--sx-type);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--sx-com);
+  font-style: italic;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--sx-attr);
+}
+.hljs-name,
+.hljs-tag {
+  color: var(--sx-tag);
+}
+.hljs-variable,
+.hljs-params,
+.hljs-subst,
+.hljs-deletion {
+  color: var(--sx-var);
+}
+.hljs-params {
+  color: inherit;
+}
+.hljs-meta {
+  color: var(--sx-meta);
+}
+.hljs-regexp {
+  color: var(--sx-re);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
