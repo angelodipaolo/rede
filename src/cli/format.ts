@@ -1,4 +1,44 @@
-import type { AgentThread, DiffFile, Review, ReviewSpec, Thread } from '../shared/types.ts';
+import type { AgentThread, DiffFile, Review, ReviewBatch, ReviewMode, ReviewSpec, Thread, WaitResponse } from '../shared/types.ts';
+
+/** What the agent must do for each mode. Plain imperative text: agents follow it literally. */
+export const MODE_INSTRUCTIONS: Record<ReviewMode, string> = {
+  ask: 'Answer; change code only if the comment asks for it.',
+  discuss:
+    'Answer and discuss only. Do not change any code or files, even if a comment asks for a change; describe the change you would make instead.',
+  implement:
+    'Change the code to address every comment. Then reply in each thread with what you changed (files and lines). If a comment is a question, answer it. If you disagree with a request or it is ambiguous, do not guess: say so in the thread and leave that code unchanged. You do not have to make all the changes before you reply, but reply to every thread before you wait again.',
+};
+
+/** One line per thread block: the mode it must be handled in. */
+function modeLine(t: Thread, batchId: number | null): string {
+  switch (t.mode) {
+    case 'ask':
+      return `Mode: ASK (one-off comment). ${MODE_INSTRUCTIONS.ask}`;
+    case 'discuss':
+      return `Mode: DISCUSS${batchId ? ` (review #${batchId})` : ''}. Do not change any code or files; describe the change instead.`;
+    case 'implement':
+      return `Mode: IMPLEMENT${batchId ? ` (review #${batchId})` : ''}. Change the code, then reply with what you changed.`;
+  }
+}
+
+const RULE = '='.repeat(72);
+
+/** The header printed before the threads of one submitted review. */
+export function formatBatchHeader(b: ReviewBatch, count: number): string {
+  const out = [RULE, `# REVIEW #${b.id} · ${b.mode.toUpperCase()} · ${count} thread${count === 1 ? '' : 's'}`];
+  out.push(`Submitted ${b.submittedAt} by the human reviewer. Threads: ${b.threadIds.map((id) => `#${id}`).join(', ')}`);
+  if (b.body.trim()) {
+    out.push('', 'Overall note from the reviewer:');
+    out.push(...b.body.trimEnd().split('\n').map((l) => `> ${l}`));
+  }
+  out.push('', `INSTRUCTION (${b.mode.toUpperCase()}): ${MODE_INSTRUCTIONS[b.mode]}`, RULE);
+  return out.join('\n');
+}
+
+/** The header printed before one-off threads in a wait response. */
+export function formatOneOffHeader(count: number): string {
+  return [RULE, `# ONE-OFF COMMENTS · ${count} thread${count === 1 ? '' : 's'} (not part of a review)`, `INSTRUCTION (ASK): ${MODE_INSTRUCTIONS.ask}`, RULE].join('\n');
+}
 
 export function specText(spec: ReviewSpec): string {
   switch (spec.kind) {
@@ -39,6 +79,7 @@ export function formatAgentThread(at: AgentThread, agentName: string, opts: { re
   if (t.noteOnly) flags.push('private note');
   out.push(`## Thread #${t.id} · ${location(t)}`);
   out.push(`Review: ${at.review.title} [${at.review.id}] · ${flags.join(' · ')}`);
+  out.push(modeLine(t, at.batchId ?? null));
   out.push(`Repo: ${at.repoRoot}`);
   out.push('');
   if (at.diffContext) {
@@ -74,7 +115,7 @@ export function formatThreadLine(at: AgentThread): string {
   const last = t.messages[t.messages.length - 1];
   const preview = last ? `${last.author.name}: ${last.body.replace(/\s+/g, ' ').slice(0, 90)}` : '';
   const state = t.resolved ? 'resolved' : t.agentState;
-  return `#${t.id} [${state}${t.outdated ? ', outdated' : ''}] ${location(t)} · ${at.review.id} · ${preview}`;
+  return `#${t.id} [${state}, ${t.mode}${t.outdated ? ', outdated' : ''}] ${location(t)} · ${at.review.id} · ${preview}`;
 }
 
 /** Renders one file as unified diff text. */
@@ -124,4 +165,27 @@ export function formatDiff(r: Review, stat: boolean): string {
     return out.join('\n');
   }
   return out.join('\n');
+}
+
+/** A wait response: each submitted review under its own header, then one-off threads. */
+export function formatWait(r: WaitResponse, agentName: string, argStyle: boolean): string {
+  const n = r.threads.length;
+  const parts = [`# ${n} thread${n > 1 ? 's' : ''} for you (${agentName})\nAnswer each one with \`margin reply <id>\`, then run \`margin wait\` again.`];
+  const block = (at: AgentThread) => formatAgentThread(at, agentName, { replyHint: true, argStyle });
+  const batches = new Map(r.batches.map((b) => [b.id, b]));
+  const grouped = new Map<number, AgentThread[]>();
+  const oneOff: AgentThread[] = [];
+  for (const at of r.threads) {
+    const b = at.batchId ?? null;
+    if (b !== null && batches.has(b)) {
+      if (!grouped.has(b)) grouped.set(b, []);
+      grouped.get(b)!.push(at);
+    } else oneOff.push(at);
+  }
+  for (const [id, list] of grouped) parts.push(formatBatchHeader(batches.get(id)!, list.length), ...list.map(block));
+  if (oneOff.length) {
+    if (grouped.size) parts.push(formatOneOffHeader(oneOff.length));
+    parts.push(...oneOff.map(block));
+  }
+  return parts.join('\n\n');
 }

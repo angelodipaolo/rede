@@ -37,6 +37,24 @@ Uncommitted reviews have three views: all changes, staged, and unstaged.
 
 Other commands: `margin status`, `margin list`, `margin stop`.
 
+### Comments and reviews
+
+There are two ways to talk to the agent:
+
+- **Comment** (one-off): the agent gets it at once and answers. Mode *ask*: it
+  answers, and changes code only when the comment asks for a change.
+- **Review**: "Add to review" queues comments and replies as *pending*. Agents
+  do not see pending comments. "Finish review" sends all of them together, as
+  one batch to one agent, with a mode:
+  - **Discuss**: the agent answers and discusses only. It must not change code.
+  - **Implement**: the agent changes the code to address every comment, then
+    replies in each thread with what it changed.
+
+Keys: `⌘↵` sends with the primary button (Add to review while a review is in
+progress, else Comment), `⌘⇧↵` with the other one. `Shift+R` opens Finish
+review; there `⌘↵` is Discuss and `⌘⇧↵` is Implement. A private note is never
+sent, so it cannot be part of a review.
+
 ## Connect an agent
 
 Agents use the `margin` CLI. No MCP server is needed.
@@ -49,8 +67,9 @@ margin setup        # install the Margin skill for Claude Code and Codex, and th
 `~/.codex/skills/margin/SKILL.md` and `~/.codex/rules/margin.rules` (it
 respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`), and prints each file it changed.
 It is safe to run again. Then tell the agent "connect to margin" (or use `/margin` in
-Claude Code). `margin guide` prints the same instructions, so you can also paste
-them into any agent.
+Claude Code). The skill only tells the agent to run `margin guide`, which
+prints the instructions of the installed Margin build, so the skill does not
+go stale when Margin changes. You can also paste the guide into any agent.
 
 The agent loop:
 
@@ -77,6 +96,11 @@ All agent commands take `--as <name>` (default: `$MARGIN_AGENT`, else `claude`
 inside Claude Code, `codex` inside Codex, else `agent`), `--review <id>`
 (default: every review for `wait` and `threads`, the most recently opened review
 for `comment` and `diff`), and `--json`.
+
+`wait` prints each submitted review under a `REVIEW #n · DISCUSS|IMPLEMENT`
+header with your overall note and the instruction for the mode, then its
+threads; one-off threads follow under their own header. Every thread states its
+mode. All threads of one review always go to one agent in one `wait`.
 
 When `wait` hands a thread to an agent, the thread shows as "working" for that
 agent. If the agent does not reply within 15 minutes, or runs `margin release`,
@@ -130,7 +154,8 @@ permissions (interactive `codex` asks you), or to run `margin setup`. In
 Margin keeps its data in `.git/margin/` of each repository (for a linked
 worktree: in that worktree's git directory). It is never committed.
 
-- `margin.db`: reviews, threads, messages, viewed state (SQLite, built into Node).
+- `margin.db`: reviews, threads, messages, submitted review batches, viewed
+  state (SQLite, built into Node). Older databases are upgraded in place.
 - `server.json`: pid, port and build of the running server. A strictly newer
   `margin` (higher version, or same version and a newer bundle) replaces an
   older running server on the same port. An older `margin` uses the newer

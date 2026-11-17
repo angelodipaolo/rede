@@ -16,7 +16,7 @@ inside the repository. It starts its local server (127.0.0.1) when needed.
    the diff around them (">" marks the commented lines), and the whole
    conversation.
 2. Investigate. Read the code, follow calls, run searches or tests if that helps.
-   Answer the question that was asked.
+   Do what the thread's mode says (see "Modes" below).
 3. Reply: \`margin reply <id>\` with your answer on stdin:
 
        margin reply 12 <<'MARGIN_EOF'
@@ -47,12 +47,28 @@ plain command, so in Codex:
   rule is not installed, rerun the command with escalated permissions, or ask
   the user to run \`margin setup\` in a terminal and start a new Codex session.
 
+## Modes
+
+Every thread shows a "Mode:" line. Follow it exactly.
+
+- ASK: a one-off comment, sent at once. Answer it. Change code only if the
+  comment asks for a change; then reply with what you changed.
+- DISCUSS: part of a submitted review. Answer and discuss only. Do not change
+  any code or files, even if a comment asks for a change; describe the change
+  you would make instead.
+- IMPLEMENT: part of a submitted review. Change the code to address every
+  comment, then reply in each thread with what you changed (files and lines).
+  Answer questions. If a request is ambiguous or you disagree, say so in the
+  thread and leave that code unchanged.
+
+A submitted review arrives in one \`wait\` as a "REVIEW #n" header (mode, the
+reviewer's overall note, the instruction) followed by its threads. One-off
+threads come after it. Reply to every thread before you wait again.
+
 ## How to answer
 
 - Answer the question. Be specific and short. Cite code as \`path:line\`.
 - Say what you checked. If you are not sure, say so and say how to find out.
-- Do not edit code unless the comment asks for a change. When it does, make the
-  change, then reply with what you changed (files and lines).
 - Never resolve a thread unless the human asks you to. The human resolves threads.
 - A thread marked OUTDATED: the code it was on changed. Look at the current code
   before you answer.
@@ -86,8 +102,23 @@ When the human asks you to review the diff:
 const DESCRIPTION =
   'Answer code review comments in Margin, the local diff review tool. Use when the user asks you to connect to Margin, answer or watch review comments, run `margin wait`, or leave review findings on a diff as Margin threads.';
 
+/**
+ * The installed skill only points at `margin guide`, so it never goes stale when Margin changes:
+ * the guide always comes from the installed margin build.
+ */
+export const SKILL_BODY = `# Margin
+
+Run \`margin guide\` first and follow what it prints. It is the current guide
+for the installed Margin version: how to wait for review comments, how to
+reply, and what each mode (ask, discuss, implement) allows you to do.
+
+Run margin by name and alone (no pipe, redirection or heredoc around
+\`margin guide\`). If \`margin\` is not found, tell the user to install Margin
+and run \`margin setup\`.
+`;
+
 export function skillFile(): string {
-  return `---\nname: margin\ndescription: ${DESCRIPTION}\n---\n\n${GUIDE}`;
+  return `---\nname: margin\ndescription: ${DESCRIPTION}\n---\n\n${SKILL_BODY}`;
 }
 
 export interface SetupResult {

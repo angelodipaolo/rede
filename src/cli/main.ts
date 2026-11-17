@@ -15,7 +15,7 @@ import type {
 import { VERSION } from '../server/errors.ts';
 import { currentBranch, defaultBranch, discoverRepo, git, type RepoPaths } from '../server/git.ts';
 import { ApiFailure, detectAgentName, ensureServer, findServer, inCodex, request, stopServer, streamTo } from './client.ts';
-import { formatAgentThread, formatDiff, formatThreadLine, location } from './format.ts';
+import { formatAgentThread, formatDiff, formatThreadLine, formatWait, location } from './format.ts';
 import { GUIDE, setup } from './guide.ts';
 
 const CLI_PATH = fileURLToPath(import.meta.url);
@@ -239,9 +239,7 @@ async function cmdWait(args: Args): Promise<void> {
   }
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
   if (r.timedOut || !r.threads.length) return out('No new comments. Run `margin wait` again.');
-  const n = r.threads.length;
-  const head = `# ${n} thread${n > 1 ? 's' : ''} for you (${name})\nAnswer each one with \`margin reply <id>\`, then run \`margin wait\` again.`;
-  out([head, ...r.threads.map((at) => formatAgentThread(at, name, { replyHint: true, argStyle: argStyle(name) }))].join('\n\n'));
+  out(formatWait(r, name, argStyle(name)));
 }
 
 function threadId(s: string | undefined): number {
