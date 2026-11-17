@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { AuthorKind, ReviewMode, ReviewScope, ReviewSpec } from '../shared/types.ts';
+import type { AuthorKind, ReviewMode, ReviewScope, ReviewSpec, ThreadOriginal } from '../shared/types.ts';
 
 /** Which content a thread was written on. 'index' exists only in working reviews. */
 export type Target = 'old' | 'index' | 'new';
@@ -30,8 +30,11 @@ export interface ThreadRow {
   ctxBefore: string[];
   ctxAfter: string[];
   outdated: boolean;
+  outdatedReason: 'changed' | 'file-gone' | null;
   resolved: boolean;
   noteOnly: boolean;
+  /** The code when the thread was created. Null for threads stored before Margin kept it. */
+  original: ThreadOriginal | null;
   /** Mode of the latest submitted human message. */
   mode: ReviewMode;
   claimedBy: string | null;
@@ -60,6 +63,8 @@ export interface BatchRow {
   body: string;
   submittedAt: string;
   threadIds: number[];
+  head: string | null;
+  branch: string | null;
 }
 
 export interface ViewedRow {
@@ -110,8 +115,10 @@ CREATE TABLE IF NOT EXISTS threads (
   ctx_before TEXT NOT NULL,
   ctx_after TEXT NOT NULL,
   outdated INTEGER NOT NULL DEFAULT 0,
+  outdated_reason TEXT,
   resolved INTEGER NOT NULL DEFAULT 0,
   note_only INTEGER NOT NULL DEFAULT 0,
+  original TEXT,
   mode TEXT NOT NULL DEFAULT 'ask',
   claimed_by TEXT,
   claimed_at INTEGER,
@@ -138,7 +145,9 @@ CREATE TABLE IF NOT EXISTS batches (
   mode TEXT NOT NULL,
   body TEXT NOT NULL,
   submitted_at TEXT NOT NULL,
-  thread_ids TEXT NOT NULL
+  thread_ids TEXT NOT NULL,
+  head TEXT,
+  branch TEXT
 );
 CREATE INDEX IF NOT EXISTS batches_review ON batches(review_id);
 CREATE TABLE IF NOT EXISTS viewed (
@@ -169,8 +178,10 @@ function threadFromRow(r: Row): ThreadRow {
     ctxBefore: JSON.parse(String(r.ctx_before)) as string[],
     ctxAfter: JSON.parse(String(r.ctx_after)) as string[],
     outdated: Number(r.outdated) === 1,
+    outdatedReason: Number(r.outdated) === 1 ? (((r.outdated_reason as string | null) ?? 'changed') as ThreadRow['outdatedReason']) : null,
     resolved: Number(r.resolved) === 1,
     noteOnly: Number(r.note_only) === 1,
+    original: parseOriginal(r.original),
     mode: ((r.mode as string | null) ?? 'ask') as ReviewMode,
     claimedBy: (r.claimed_by as string | null) ?? null,
     claimedAt: r.claimed_at === null ? null : Number(r.claimed_at),
@@ -178,6 +189,15 @@ function threadFromRow(r: Row): ThreadRow {
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   };
+}
+
+function parseOriginal(v: unknown): ThreadOriginal | null {
+  if (typeof v !== 'string' || !v) return null;
+  try {
+    return JSON.parse(v) as ThreadOriginal;
+  } catch {
+    return null;
+  }
 }
 
 function messageFromRow(r: Row): MessageRow {
@@ -202,6 +222,8 @@ function batchFromRow(r: Row): BatchRow {
     body: String(r.body),
     submittedAt: String(r.submitted_at),
     threadIds: JSON.parse(String(r.thread_ids)) as number[],
+    head: (r.head as string | null | undefined) ?? null,
+    branch: (r.branch as string | null | undefined) ?? null,
   };
 }
 
@@ -213,6 +235,11 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['threads', 'mode', "mode TEXT NOT NULL DEFAULT 'ask'"],
   ['messages', 'pending', 'pending INTEGER NOT NULL DEFAULT 0'],
   ['messages', 'batch_id', 'batch_id INTEGER'],
+  // Review history: the code snapshot of a thread, why it is outdated, and where a batch was submitted.
+  ['threads', 'original', 'original TEXT'],
+  ['threads', 'outdated_reason', 'outdated_reason TEXT'],
+  ['batches', 'head', 'head TEXT'],
+  ['batches', 'branch', 'branch TEXT'],
 ];
 
 function reviewFromRow(r: Row): ReviewRow {
@@ -303,11 +330,13 @@ export class Store {
 
   // ------------------------------------------------------------ threads
 
-  insertThread(t: Omit<ThreadRow, 'id' | 'outdated' | 'resolved' | 'claimedBy' | 'claimedAt' | 'deliveredUpTo' | 'pathHint' | 'mode'> & { pathHint: string | null }): number {
+  insertThread(
+    t: Omit<ThreadRow, 'id' | 'outdated' | 'outdatedReason' | 'resolved' | 'claimedBy' | 'claimedAt' | 'deliveredUpTo' | 'pathHint' | 'mode'> & { pathHint: string | null },
+  ): number {
     const r = this.db
       .prepare(
-        `INSERT INTO threads (review_id, target, home_scope, path, path_hint, start_line, end_line, snippet, ctx_before, ctx_after, note_only, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (review_id, target, home_scope, path, path_hint, start_line, end_line, snippet, ctx_before, ctx_after, note_only, original, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         t.reviewId,
@@ -321,6 +350,7 @@ export class Store {
         JSON.stringify(t.ctxBefore),
         JSON.stringify(t.ctxAfter),
         t.noteOnly ? 1 : 0,
+        t.original ? JSON.stringify(t.original) : null,
         t.createdAt,
         t.updatedAt,
       );
@@ -348,6 +378,7 @@ export class Store {
       startLine: 'start_line',
       endLine: 'end_line',
       outdated: 'outdated',
+      outdatedReason: 'outdated_reason',
       resolved: 'resolved',
       noteOnly: 'note_only',
       mode: 'mode',
@@ -419,8 +450,8 @@ export class Store {
 
   insertBatch(b: Omit<BatchRow, 'id'>): number {
     const r = this.db
-      .prepare('INSERT INTO batches (review_id, mode, body, submitted_at, thread_ids) VALUES (?, ?, ?, ?, ?)')
-      .run(b.reviewId, b.mode, b.body, b.submittedAt, JSON.stringify(b.threadIds));
+      .prepare('INSERT INTO batches (review_id, mode, body, submitted_at, thread_ids, head, branch) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(b.reviewId, b.mode, b.body, b.submittedAt, JSON.stringify(b.threadIds), b.head, b.branch);
     return Number(r.lastInsertRowid);
   }
 
@@ -431,6 +462,22 @@ export class Store {
 
   batchesOf(reviewId: string): BatchRow[] {
     return (this.db.prepare('SELECT * FROM batches WHERE review_id = ? ORDER BY id').all(reviewId) as Row[]).map(batchFromRow);
+  }
+
+  allBatches(): BatchRow[] {
+    return (this.db.prepare('SELECT * FROM batches ORDER BY id').all() as Row[]).map(batchFromRow);
+  }
+
+  /** Every message of the repo, grouped by thread, oldest first. One query for History. */
+  messagesByThread(): Map<number, MessageRow[]> {
+    const out = new Map<number, MessageRow[]>();
+    for (const r of this.db.prepare('SELECT * FROM messages ORDER BY id').all() as Row[]) {
+      const m = messageFromRow(r);
+      let arr = out.get(m.threadId);
+      if (!arr) out.set(m.threadId, (arr = []));
+      arr.push(m);
+    }
+    return out;
   }
 
   messagesOf(threadId: number): MessageRow[] {

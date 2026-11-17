@@ -9,9 +9,13 @@ import type {
   CreateThreadRequest,
   DiffFile,
   FileContent,
+  HistoryEntry,
+  HistoryPage,
+  HistoryReviewRef,
   Message,
   RepoInfo,
   Review,
+  ReviewMode,
   ReviewBatch,
   ReviewScope,
   ReviewSpec,
@@ -21,6 +25,7 @@ import type {
   SinceViewed,
   SubmitReviewRequest,
   Thread,
+  ThreadOriginal,
   UpdateThreadRequest,
   WaitResponse,
 } from '../shared/types.ts';
@@ -52,6 +57,7 @@ import {
   marginDir,
   mergeBase,
   missingObjects,
+  readHeadSync,
   resolveCommit,
   useObjectStore,
   treeOf,
@@ -59,7 +65,7 @@ import {
 } from './git.ts';
 import { IndexTreeReader, WorkingSnapshotter } from './snapshot.ts';
 import type { BatchRow, MessageRow, ReviewRow, Store, Target, ThreadRow } from './store.ts';
-import { renderDiffContext } from './context.ts';
+import { captureOriginal, renderDiffContext } from './context.ts';
 
 export const SCOPE_SIDES: Record<ReviewScope, { old: Target; new: Target }> = {
   all: { old: 'old', new: 'new' },
@@ -107,6 +113,16 @@ interface Waiter {
 }
 
 const nowIso = () => new Date().toISOString();
+
+export interface HistoryQuery {
+  q?: string;
+  review?: string;
+  state?: 'open' | 'resolved' | 'all';
+  mode?: ReviewMode;
+  since?: string;
+  before?: string;
+  limit?: number;
+}
 
 /** Loose objects in Margin's private object directory above which it is emptied at start. */
 const PRIVATE_OBJECTS_MAX = 20_000;
@@ -168,7 +184,33 @@ function toMessage(m: MessageRow): Message {
 }
 
 function toBatch(b: BatchRow): ReviewBatch {
-  return { id: b.id, reviewId: b.reviewId, mode: b.mode, body: b.body, submittedAt: b.submittedAt, threadIds: b.threadIds };
+  return { id: b.id, reviewId: b.reviewId, mode: b.mode, body: b.body, submittedAt: b.submittedAt, threadIds: b.threadIds, head: b.head, branch: b.branch };
+}
+
+/**
+ * The live-view rule: a thread that is resolved and outdated, with no pending message, is a finished
+ * conversation about code that is gone. It leaves the diff view and lives in History. It is never
+ * deleted; a new message or the code coming back returns it to the diff view.
+ */
+export function isArchived(t: Pick<ThreadRow, 'resolved' | 'outdated'>, msgs: Pick<MessageRow, 'pending'>[]): boolean {
+  return t.resolved && t.outdated && !msgs.some((m) => m.pending);
+}
+
+/** Threads of a batch that got an agent message after the batch's last message in that thread. */
+function answeredIn(b: BatchRow, msgsOf: (tid: number) => MessageRow[] | undefined): number {
+  let n = 0;
+  for (const tid of b.threadIds) {
+    const msgs = msgsOf(tid) ?? [];
+    let last = -1;
+    for (const m of msgs) if (m.batchId === b.id) last = m.id;
+    if (last >= 0 && msgs.some((m) => m.authorKind === 'agent' && m.id > last)) n++;
+  }
+  return n;
+}
+
+/** Cursor of a history entry: its time, then a key that orders entries of the same time. */
+function historyKey(e: { at: string; key: string }): string {
+  return `${e.at}|${e.key}`;
 }
 
 /** Messages an agent can see: pending ones wait in the human's review in progress. */
@@ -541,11 +583,23 @@ export class Margin {
       resolved: state.resolved,
       diffFingerprint: state.fingerprints[scope] ?? '',
       files: out,
-      threads: this.store.threadsOfReview(id).map((t) => this.toThread(t, scope, state)),
+      ...this.liveThreads(id, scope, state),
       batches: this.store.batchesOf(id).map(toBatch),
       pendingCount: this.store.pendingCount(id),
       agents: this.agents(),
     };
+  }
+
+  /** The threads of the diff view (the live-view rule, see isArchived) and how many were left out. */
+  private liveThreads(id: string, scope: ReviewScope, state: ReviewState): { threads: Thread[]; archivedCount: number } {
+    const threads: Thread[] = [];
+    let archivedCount = 0;
+    for (const t of this.store.threadsOfReview(id)) {
+      const th = this.toThread(t, scope, state);
+      if (th.archived) archivedCount++;
+      else threads.push(th);
+    }
+    return { threads, archivedCount };
   }
 
   /** Files with hunks for the given new-side paths. Unknown paths are skipped. */
@@ -714,19 +768,21 @@ export class Margin {
       const patch: Partial<ThreadRow> = {};
       if (!loc || !loc.id) {
         if (!t.outdated) patch.outdated = true;
+        if (t.outdatedReason !== 'file-gone') patch.outdatedReason = 'file-gone';
       } else {
         const hint = loc.entry.status === 'R' ? (loc.isNew ? loc.entry.oldPath : loc.entry.newPath) : t.pathHint;
         if (loc.path !== t.path) patch.path = loc.path;
         if (hint !== t.pathHint) patch.pathHint = hint;
         if (t.startLine === null || t.endLine === null) {
-          if (t.outdated) patch.outdated = false;
+          if (t.outdated) Object.assign(patch, { outdated: false, outdatedReason: null });
         } else {
           const lines = splitLines((blobs.get(loc.id) ?? Buffer.alloc(0)).toString('utf8'));
           const start = reanchor(lines, { snippet: t.snippet, ctxBefore: t.ctxBefore, ctxAfter: t.ctxAfter }, t.startLine);
           if (start === null) {
             if (!t.outdated) patch.outdated = true;
+            if (t.outdatedReason !== 'changed' || !t.outdated) patch.outdatedReason = 'changed';
           } else {
-            if (t.outdated) patch.outdated = false;
+            if (t.outdated) Object.assign(patch, { outdated: false, outdatedReason: null });
             if (start !== t.startLine) {
               patch.startLine = start;
               patch.endLine = start + t.snippet.length - 1;
@@ -787,8 +843,11 @@ export class Margin {
       inScope,
       homeScope: t.homeScope,
       snippet: t.snippet,
+      original: t.original,
       outdated: t.outdated,
+      outdatedReason: t.outdated ? (t.outdatedReason ?? 'changed') : null,
       resolved: t.resolved,
+      archived: isArchived(t, msgs),
       noteOnly: t.noteOnly,
       agentState,
       mode: t.mode,
@@ -856,6 +915,8 @@ export class Margin {
     let start: number | null = null;
     let end: number | null = null;
     let cap = { snippet: [] as string[], ctxBefore: [] as string[], ctxAfter: [] as string[] };
+    const { head, branch } = readHeadSync(this.repo);
+    const original: ThreadOriginal = { side: a.side, lines: [], section: '', truncated: false, head, branch };
     const hasLines = a.startLine !== null && a.startLine !== undefined;
     if (hasLines) {
       if (!side.id) throw badRequest(`The ${a.side} side of "${a.path}" does not exist (the file was ${e.status === 'A' ? 'added' : 'deleted'}).`);
@@ -867,6 +928,10 @@ export class Margin {
       const lines = splitLines(buf.toString('utf8'));
       if (end > lines.length) throw badRequest(`Line ${end} is past the end of "${a.path}" (${a.side} side has ${lines.length} lines).`);
       cap = capture(lines, start, end);
+      // The code as the reviewer saw it: the diff lines around the anchor, for History and outdated threads.
+      const meta = (await this.metaFiles(state, scope)).find((x) => x.path === displayPath(e));
+      const f = meta ? (await this.withHunks(state, scope, [meta]))[0] : undefined;
+      Object.assign(original, captureOriginal(f ?? null, a.side, start, end, lines));
     }
     const now = nowIso();
     const hint = e.status === 'R' ? (isNew ? e.oldPath : e.newPath) : null;
@@ -883,6 +948,7 @@ export class Margin {
         ctxBefore: cap.ctxBefore,
         ctxAfter: cap.ctxAfter,
         noteOnly: !!req.noteOnly,
+        original,
         createdAt: now,
         updatedAt: now,
       });
@@ -990,11 +1056,12 @@ export class Margin {
     if (req.body !== undefined && typeof req.body !== 'string') throw badRequest('body must be a string.');
     const note = (req.body ?? '').trim();
     const now = nowIso();
+    const { head, branch } = readHeadSync(this.repo);
     const batch = this.store.transaction(() => {
       const msgs = this.store.pendingMessages(reviewId);
       if (!msgs.length) throw badRequest('Nothing to submit: the review has no pending comments.');
       const threadIds = [...new Set(msgs.map((m) => m.threadId))].sort((a, b) => a - b);
-      const row = { reviewId, mode, body: note, submittedAt: now, threadIds };
+      const row = { reviewId, mode, body: note, submittedAt: now, threadIds, head, branch };
       const id = this.store.insertBatch(row);
       this.store.releaseMessages(
         msgs.map((m) => m.id),
@@ -1131,6 +1198,91 @@ export class Margin {
     };
   }
 
+  // ================================================================ history
+
+  /** Repo-wide review history, newest first. See HistoryPage in the contract. Reads stored state only. */
+  history(query: HistoryQuery = {}): HistoryPage {
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(query.limit ?? 50)) || 50));
+    const state = query.state ?? 'all';
+    if (!['open', 'resolved', 'all'].includes(state)) throw badRequest('state must be open, resolved or all.');
+    const mode = query.mode || null;
+    if (mode && !['ask', 'discuss', 'implement'].includes(mode)) throw badRequest('mode must be ask, discuss or implement.');
+    let since: string | null = null;
+    if (query.since) {
+      const t = Date.parse(query.since);
+      if (Number.isNaN(t)) throw badRequest(`Invalid date "${query.since}". Use an ISO date such as 2026-11-01.`);
+      since = new Date(t).toISOString();
+    }
+    const text = (query.q ?? '').trim().toLowerCase();
+    const reviewFilter = query.review || null;
+
+    const reviews = new Map(this.store.listReviews().map((r) => [r.id, r]));
+    const ref = (id: string): HistoryReviewRef => {
+      const r = reviews.get(id);
+      return { id, title: r?.title ?? id, spec: r?.spec ?? { kind: 'working' } };
+    };
+    const threads = this.store.allThreads();
+    const byId = new Map(threads.map((t) => [t.id, t]));
+    const msgsBy = this.store.messagesByThread();
+    const msgsOf = (tid: number) => msgsBy.get(tid) ?? [];
+    // Threads with only pending messages belong to the review in progress, not to history.
+    const visible = (t: ThreadRow) => msgsOf(t.id).some((m) => !m.pending);
+    const stateOk = (t: ThreadRow) => state === 'all' || (state === 'open' ? !t.resolved : t.resolved);
+    const textOk = (t: ThreadRow) =>
+      !text ||
+      t.path.toLowerCase().includes(text) ||
+      (t.pathHint ?? '').toLowerCase().includes(text) ||
+      msgsOf(t.id).some((m) => m.body.toLowerCase().includes(text));
+
+    type Candidate = { at: string; key: string; build: () => HistoryEntry };
+    const list: Candidate[] = [];
+    const inBatch = new Set<number>();
+    for (const b of this.store.allBatches()) {
+      for (const tid of b.threadIds) inBatch.add(tid);
+      if (reviewFilter && b.reviewId !== reviewFilter) continue;
+      if (mode && mode !== b.mode) continue;
+      if (since && b.submittedAt < since) continue;
+      const own = b.threadIds.flatMap((tid) => {
+        const t = byId.get(tid);
+        return t && visible(t) ? [t] : [];
+      });
+      const noteHit = !!text && b.body.toLowerCase().includes(text);
+      const shown = own.filter((t) => stateOk(t) && (noteHit || textOk(t)));
+      if (!shown.length && !(state === 'all' && (!text || noteHit) && !own.length)) continue;
+      list.push({
+        at: b.submittedAt,
+        key: `b${String(b.id).padStart(9, '0')}`,
+        build: () => ({
+          kind: 'batch',
+          at: b.submittedAt,
+          review: ref(b.reviewId),
+          batch: toBatch(b),
+          threads: shown.map((t) => this.toThread(t, t.homeScope, null, msgsOf(t.id))),
+          counts: { threads: own.length, answered: answeredIn(b, msgsOf), resolved: own.filter((t) => t.resolved).length },
+        }),
+      });
+    }
+    for (const t of threads) {
+      // A thread that got any message from a batch is shown under its batch(es).
+      if (inBatch.has(t.id) || msgsOf(t.id).some((m) => m.batchId !== null) || !visible(t)) continue;
+      if (reviewFilter && t.reviewId !== reviewFilter) continue;
+      if (mode && mode !== 'ask') continue;
+      if (since && t.createdAt < since) continue;
+      if (!stateOk(t) || !textOk(t)) continue;
+      list.push({
+        at: t.createdAt,
+        key: `t${String(t.id).padStart(9, '0')}`,
+        build: () => ({ kind: 'thread', at: t.createdAt, review: ref(t.reviewId), thread: this.toThread(t, t.homeScope, null, msgsOf(t.id)) }),
+      });
+    }
+    list.sort((a, b) => (historyKey(a) < historyKey(b) ? 1 : historyKey(a) > historyKey(b) ? -1 : 0));
+    const start = query.before ? list.findIndex((e) => historyKey(e) < query.before!) : 0;
+    const from = start < 0 ? list.length : start;
+    const page = list.slice(from, from + limit);
+    const more = from + limit < list.length;
+    return { entries: page.map((e) => e.build()), next: more && page.length ? historyKey(page[page.length - 1]!) : null, total: list.length };
+  }
+
   // ================================================================ agents
 
   agents(): AgentPresence[] {
@@ -1244,6 +1396,8 @@ export class Margin {
     if (signal?.aborted) return { threads: [], batches: [], timedOut: true };
     const now = this.takeDeliverable(agent, reviewId);
     if (now.length) return this.handOver(agent, now, signal);
+    // timeout 0 (`margin inbox`): never block, and do not show the agent as waiting.
+    if (timeoutMs <= 0) return { threads: [], batches: [], timedOut: true };
     const since = nowIso();
     const rows = await new Promise<ThreadRow[] | null>((resolve) => {
       let done = false;

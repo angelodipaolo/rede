@@ -151,6 +151,20 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
         return sendJson(res, 200, margin.agents());
       case 'GET reviews':
         return sendJson(res, 200, margin.listReviews());
+      case 'GET history':
+        return sendJson(
+          res,
+          200,
+          margin.history({
+            q: q.get('q') ?? undefined,
+            review: q.get('review') || undefined,
+            state: (q.get('state') || undefined) as 'open' | 'resolved' | 'all' | undefined,
+            mode: (q.get('mode') || undefined) as 'ask' | 'discuss' | 'implement' | undefined,
+            since: q.get('since') || undefined,
+            before: q.get('before') || undefined,
+            limit: q.get('limit') ? Number(q.get('limit')) : undefined,
+          }),
+        );
       case 'POST reviews': {
         const body = await readJson(req);
         return sendJson(res, 200, await margin.openReview(body?.spec));

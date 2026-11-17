@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs';
 
 /** The empty tree. Used as the old side of a root commit or a repo without commits. */
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -232,4 +233,40 @@ export async function missingObjects(cwd: string, ids: string[]): Promise<string
 
 export async function hashObject(cwd: string, content: string | Buffer): Promise<string> {
   return gitLine(['hash-object', '-w', '--stdin'], { cwd, input: content });
+}
+
+/**
+ * HEAD commit and branch, read from the git directory without a process (synchronous, for code
+ * that runs inside one transaction). Follows a symbolic HEAD to the loose ref, then packed-refs.
+ * Gives null for anything it cannot read (unborn branch, reftable): it is a record, not a check.
+ */
+export function readHeadSync(repo: RepoPaths): { head: string | null; branch: string | null } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(repo.gitDir, 'HEAD'), 'utf8').trim();
+  } catch {
+    return { head: null, branch: null };
+  }
+  if (/^[0-9a-f]{40,64}$/.test(raw)) return { head: raw, branch: null };
+  const m = /^ref: (refs\/\S+)$/.exec(raw);
+  if (!m) return { head: null, branch: null };
+  const ref = m[1]!;
+  const branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : null;
+  for (const dir of [repo.gitDir, repo.commonDir]) {
+    try {
+      const v = fs.readFileSync(path.join(dir, ref), 'utf8').trim();
+      if (/^[0-9a-f]{40,64}$/.test(v)) return { head: v, branch };
+    } catch {
+      /* not a loose ref here */
+    }
+  }
+  try {
+    for (const line of fs.readFileSync(path.join(repo.commonDir, 'packed-refs'), 'utf8').split('\n')) {
+      const [id, name] = line.split(' ');
+      if (name === ref && id && /^[0-9a-f]{40,64}$/.test(id)) return { head: id, branch };
+    }
+  } catch {
+    /* no packed refs */
+  }
+  return { head: null, branch };
 }

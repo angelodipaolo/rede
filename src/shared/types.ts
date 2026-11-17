@@ -88,6 +88,11 @@ export interface Review extends ReviewSummary {
   /** Number of pending messages in the review in progress. */
   pendingCount: number;
   agents: AgentPresence[];
+  /**
+   * Threads of this review left out of `threads` because they are archived (resolved and
+   * outdated, see Thread.archived). They are kept and shown in History (GET /api/history).
+   */
+  archivedCount: number;
 }
 
 export interface RepoInfo {
@@ -207,12 +212,31 @@ export interface Thread {
   /** The anchored lines as they were when the thread was created. */
   snippet: string[];
   /**
+   * The code as it was when the thread was created: the diff lines around the anchor, and the
+   * commit and branch checked out then. Null for threads created before Margin stored it; the UI
+   * then falls back to `snippet`.
+   */
+  original: ThreadOriginal | null;
+  /**
    * True when the server cannot find the anchored code in the current diff
    * (the lines changed or the file left the diff). The UI shows such threads
    * at the top of the file, or in a review-level list, with the snippet.
    */
   outdated: boolean;
+  /**
+   * Why the thread is outdated. 'changed': the file is in the diff but the anchored lines changed.
+   * 'file-gone': the file is no longer in this diff. Null when not outdated.
+   */
+  outdatedReason: 'changed' | 'file-gone' | null;
   resolved: boolean;
+  /**
+   * The live-view rule. True when the thread is resolved, outdated, and has no pending message:
+   * the conversation is finished and its code is gone. Archived threads are left out of
+   * Review.threads (counted in Review.archivedCount) and live in History. A 'thread' event with
+   * archived = true tells the UI to drop the thread from the diff view. Nothing is deleted: a
+   * new message (it reopens the thread) or the code coming back brings it back.
+   */
+  archived: boolean;
   /** A private note. Agents never receive it through `wait`. */
   noteOnly: boolean;
   /**
@@ -256,6 +280,36 @@ export interface ReviewBatch {
   submittedAt: string;
   /** Threads that received a message from this batch. */
   threadIds: number[];
+  /** HEAD commit when the review was submitted. Null for batches stored before Margin kept it, or when HEAD did not resolve. */
+  head: string | null;
+  /** Branch checked out when the review was submitted. Null when HEAD was detached or unknown. */
+  branch: string | null;
+}
+
+/** One line of the code snapshot of a thread. */
+export interface OriginalLine extends DiffLine {
+  /** True for the commented lines. */
+  anchored: boolean;
+}
+
+/** The code a thread was written on, stored when the thread was created. */
+export interface ThreadOriginal {
+  /** Side of the anchor. */
+  side: Side;
+  /**
+   * Diff lines around the anchor (the anchored lines plus up to 6 lines before and after) with
+   * their old/new line numbers. When the anchor was on unchanged code outside every hunk, the lines
+   * are 'context' lines with the line number of `side` only. Empty for file-level threads.
+   */
+  lines: OriginalLine[];
+  /** Text after the second "@@" of the hunk (the enclosing function), when known. */
+  section: string;
+  /** True when a long anchor was cut to fit the bound. */
+  truncated: boolean;
+  /** HEAD commit at creation, or null when it did not resolve (no commits yet). */
+  head: string | null;
+  /** Branch checked out at creation, or null when HEAD was detached. */
+  branch: string | null;
 }
 
 export interface Message {
@@ -299,7 +353,60 @@ export interface AgentPresence {
  * POST /api/reviews/:id/submit  SubmitReviewRequest -> ReviewBatch   (releases all pending messages; 400 when none)
  * DELETE /api/reviews/:id/pending          -> { ok: true }   (discards the review in progress: all pending messages, and threads left empty)
  * GET  /api/reviews/:id/events             -> text/event-stream of ServerEvent (one JSON per `data:` line)
+ * GET  /api/history?q=&review=&state=&mode=&since=&before=&limit=   -> HistoryPage
  */
+
+// ----------------------------------------------------------------- history
+
+/**
+ * Repo-wide review history: every submitted review (batch) and every one-off thread, across all
+ * reviews, newest first. Reads stored state only (no diff is computed), so it stays fast with
+ * thousands of threads. Threads that have only pending messages (the review in progress) are left out.
+ *
+ * Query parameters (all optional):
+ *   q       case-insensitive text; matches message bodies, the batch note and file paths.
+ *           A batch entry matches when its note matches (all its threads are kept) or when some
+ *           of its threads match (only those are kept).
+ *   review  a review id.
+ *   state   'open' | 'resolved' | 'all' (default 'all'): filters threads; an entry without
+ *           matching threads is left out.
+ *   mode    'ask' | 'discuss' | 'implement': batch entries by batch mode; 'ask' selects one-off threads.
+ *   since   ISO date or time: entries at or after it.
+ *   before  the `next` cursor of the previous page.
+ *   limit   entries per page, 1..500, default 50.
+ */
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  /** Cursor for the next page (pass as `before`), or null at the end. */
+  next: string | null;
+  /** Entries that match the filters, over all pages. */
+  total: number;
+}
+
+export interface HistoryReviewRef {
+  id: string;
+  title: string;
+  spec: ReviewSpec;
+}
+
+/**
+ * - batch:  one submitted review. `threads` are the threads that got a message from it (filtered);
+ *           each thread carries its whole conversation. A thread that took part in two reviews
+ *           appears under both.
+ * - thread: a thread that never took part in a submitted review (one-off comments, notes, agent findings).
+ * `at` is the batch submit time or the thread creation time; entries are ordered by it, newest first.
+ */
+export type HistoryEntry =
+  | { kind: 'batch'; at: string; review: HistoryReviewRef; batch: ReviewBatch; threads: Thread[]; counts: HistoryCounts }
+  | { kind: 'thread'; at: string; review: HistoryReviewRef; thread: Thread };
+
+/** Over all threads of the batch, not only the ones that matched the filters. */
+export interface HistoryCounts {
+  threads: number;
+  /** Threads with an agent message after the batch's last message in that thread. */
+  answered: number;
+  resolved: number;
+}
 
 export interface Health {
   ok: true;
