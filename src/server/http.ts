@@ -5,7 +5,7 @@ import type { ReviewScope, ServerEvent } from '../shared/types.ts';
 import { badRequest, HttpError, notFound } from './errors.ts';
 import { patchArgs } from './diff.ts';
 import { gitStream } from './git.ts';
-import type { Margin } from './service.ts';
+import type { Rede } from './service.ts';
 
 export interface HttpOptions {
   /** Directory of the built web UI (index.html + assets). */
@@ -34,9 +34,9 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-const NOT_BUILT = `<!doctype html><meta charset="utf-8"><title>Margin</title>
+const NOT_BUILT = `<!doctype html><meta charset="utf-8"><title>Rede</title>
 <body style="font:15px system-ui;margin:3em;max-width:40em">
-<h1>Margin</h1><p>The web UI is not built. Run <code>npm run build</code> in the Margin checkout, then reload.</p>
+<h1>Rede</h1><p>The web UI is not built. Run <code>npm run build</code> in the Rede checkout, then reload.</p>
 <p>The API is running at <code>/api</code>.</p></body>`;
 
 const SCOPES: ReviewScope[] = ['all', 'staged', 'unstaged'];
@@ -84,7 +84,7 @@ function intParam(s: string | undefined): number {
   return n;
 }
 
-export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server {
+export function createHttpServer(rede: Rede, opts: HttpOptions): http.Server {
   let port = 0;
   const activity = () => opts.onActivity?.();
   const keepAliveMs = opts.keepAliveMs ?? 15_000;
@@ -142,20 +142,20 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
 
     switch (route) {
       case 'GET health':
-        return sendJson(res, 200, { ok: true, name: 'margin', version: margin.version, repo: await margin.repoInfo(), pid: process.pid });
+        return sendJson(res, 200, { ok: true, name: 'rede', version: rede.version, repo: await rede.repoInfo(), pid: process.pid });
       case 'POST shutdown':
         sendJson(res, 200, { ok: true });
         setTimeout(() => opts.onShutdown?.(), 50);
         return;
       case 'GET agents':
-        return sendJson(res, 200, margin.agents());
+        return sendJson(res, 200, rede.agents());
       case 'GET reviews':
-        return sendJson(res, 200, margin.listReviews());
+        return sendJson(res, 200, rede.listReviews());
       case 'GET history':
         return sendJson(
           res,
           200,
-          margin.history({
+          rede.history({
             q: q.get('q') ?? undefined,
             review: q.get('review') || undefined,
             state: (q.get('state') || undefined) as 'open' | 'resolved' | 'all' | undefined,
@@ -167,24 +167,24 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
         );
       case 'POST reviews': {
         const body = await readJson(req);
-        return sendJson(res, 200, await margin.openReview(body?.spec));
+        return sendJson(res, 200, await rede.openReview(body?.spec));
       }
       case 'GET reviews/:id': {
         // While a browser has the review open, a state up to 1 s old is reused (the poller pushes
         // diff-changed for newer changes). `fresh=1` (the CLI) always recomputes.
-        const maxAge = q.get('fresh') !== '1' && margin.isLive(seg[1]!) ? 1000 : 0;
-        return sendJson(res, 200, await margin.getReview(seg[1]!, parseScope(q.get('scope')), maxAge));
+        const maxAge = q.get('fresh') !== '1' && rede.isLive(seg[1]!) ? 1000 : 0;
+        return sendJson(res, 200, await rede.getReview(seg[1]!, parseScope(q.get('scope')), maxAge));
       }
       case 'POST reviews/:id/hunks': {
         const body = await readJson(req);
-        return sendJson(res, 200, await margin.hunks(seg[1]!, parseScope(q.get('scope')), body?.paths));
+        return sendJson(res, 200, await rede.hunks(seg[1]!, parseScope(q.get('scope')), body?.paths));
       }
       case 'GET reviews/:id/patch': {
-        // Not part of the browser contract: the CLI streams the plain patch (`margin diff`).
-        const [from, to] = await margin.scopeTreesOf(seg[1]!, parseScope(q.get('scope')));
+        // Not part of the browser contract: the CLI streams the plain patch (`rede diff`).
+        const [from, to] = await rede.scopeTreesOf(seg[1]!, parseScope(q.get('scope')));
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
         if (from === to) return void res.end();
-        const child = gitStream(patchArgs(from, to), { cwd: margin.cwd });
+        const child = gitStream(patchArgs(from, to), { cwd: rede.cwd });
         res.on('close', () => child.kill());
         child.stdout!.pipe(res);
         return;
@@ -192,50 +192,50 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
       case 'GET reviews/:id/file': {
         const fp = q.get('path');
         if (!fp) throw badRequest('Missing path.');
-        return sendJson(res, 200, await margin.fileContent(seg[1]!, fp, (q.get('side') ?? 'new') as 'old' | 'new', parseScope(q.get('scope'))));
+        return sendJson(res, 200, await rede.fileContent(seg[1]!, fp, (q.get('side') ?? 'new') as 'old' | 'new', parseScope(q.get('scope'))));
       }
       case 'GET reviews/:id/since-viewed': {
         const fp = q.get('path');
         if (!fp) throw badRequest('Missing path.');
-        return sendJson(res, 200, await margin.sinceViewed(seg[1]!, parseScope(q.get('scope')), fp));
+        return sendJson(res, 200, await rede.sinceViewed(seg[1]!, parseScope(q.get('scope')), fp));
       }
       case 'PUT reviews/:id/viewed': {
         const body = await readJson(req);
-        await margin.setViewed(seg[1]!, parseScope(q.get('scope')), body?.path, !!body?.viewed);
+        await rede.setViewed(seg[1]!, parseScope(q.get('scope')), body?.path, !!body?.viewed);
         return sendJson(res, 200, { ok: true });
       }
       case 'POST reviews/:id/threads': {
         const body = await readJson(req);
-        return sendJson(res, 200, await margin.createThread(seg[1]!, parseScope(q.get('scope')), body));
+        return sendJson(res, 200, await rede.createThread(seg[1]!, parseScope(q.get('scope')), body));
       }
       case 'POST reviews/:id/submit': {
         const body = await readJson(req);
-        return sendJson(res, 200, margin.submitReview(seg[1]!, body));
+        return sendJson(res, 200, rede.submitReview(seg[1]!, body));
       }
       case 'DELETE reviews/:id/pending':
-        margin.discardPending(seg[1]!);
+        rede.discardPending(seg[1]!);
         return sendJson(res, 200, { ok: true });
       case 'GET reviews/:id/events':
         return sse(seg[1]!, parseScope(q.get('scope')), req, res);
       case 'GET threads/:id':
-        return sendJson(res, 200, await margin.getThread(intParam(seg[1]), optScope(q.get('scope'))));
+        return sendJson(res, 200, await rede.getThread(intParam(seg[1]), optScope(q.get('scope'))));
       case 'PATCH threads/:id': {
         const body = await readJson(req);
-        return sendJson(res, 200, await margin.updateThread(intParam(seg[1]), body, optScope(q.get('scope'))));
+        return sendJson(res, 200, await rede.updateThread(intParam(seg[1]), body, optScope(q.get('scope'))));
       }
       case 'DELETE threads/:id':
-        await margin.deleteThread(intParam(seg[1]));
+        await rede.deleteThread(intParam(seg[1]));
         return sendJson(res, 200, { ok: true });
       case 'POST threads/:id/messages': {
         const body = await readJson(req);
-        return sendJson(res, 200, await margin.addMessage(intParam(seg[1]), body, optScope(q.get('scope'))));
+        return sendJson(res, 200, await rede.addMessage(intParam(seg[1]), body, optScope(q.get('scope'))));
       }
       case 'PATCH messages/:id': {
         const body = await readJson(req);
-        return sendJson(res, 200, await margin.editMessage(intParam(seg[1]), body?.body, optScope(q.get('scope'))));
+        return sendJson(res, 200, await rede.editMessage(intParam(seg[1]), body?.body, optScope(q.get('scope'))));
       }
       case 'DELETE messages/:id':
-        return sendJson(res, 200, await margin.deleteMessage(intParam(seg[1]), optScope(q.get('scope'))));
+        return sendJson(res, 200, await rede.deleteMessage(intParam(seg[1]), optScope(q.get('scope'))));
       case 'GET agent/wait': {
         const agent = (q.get('agent') ?? '').trim();
         const timeout = Math.min(3600, Math.max(0, Number(q.get('timeout') ?? 100) || 0));
@@ -243,9 +243,9 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
         res.on('close', () => ac.abort());
         opts.onActivity?.();
         try {
-          const r = await margin.wait(agent, timeout * 1000, q.get('review') || null, ac.signal);
+          const r = await rede.wait(agent, timeout * 1000, q.get('review') || null, ac.signal);
           if (!res.destroyed) sendJson(res, 200, r);
-          else if (r.threads.length) margin.unclaim(agent, r.threads.map((t) => margin.store.getThread(t.thread.id)!).filter(Boolean));
+          else if (r.threads.length) rede.unclaim(agent, r.threads.map((t) => rede.store.getThread(t.thread.id)!).filter(Boolean));
         } finally {
           activity();
         }
@@ -254,14 +254,14 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
       case 'GET agent/threads': {
         const state = (q.get('state') ?? 'open') as 'open' | 'pending' | 'all';
         if (!['open', 'pending', 'all'].includes(state)) throw badRequest('state must be open, pending or all.');
-        return sendJson(res, 200, await margin.agentThreads(q.get('review') || null, state));
+        return sendJson(res, 200, await rede.agentThreads(q.get('review') || null, state));
       }
       case 'GET agent/threads/:id':
-        return sendJson(res, 200, await margin.agentThreadById(intParam(seg[2])));
+        return sendJson(res, 200, await rede.agentThreadById(intParam(seg[2])));
       case 'POST agent/release': {
         const body = await readJson(req);
         if (typeof body?.agent !== 'string' || !body.agent) throw badRequest('Missing agent.');
-        const released = margin.release(body.agent);
+        const released = rede.release(body.agent);
         return sendJson(res, 200, { ok: true, released });
       }
       default:
@@ -276,7 +276,7 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
     // Subscribe first so errors (unknown review, bad scope) become a JSON error response.
     const queued: ServerEvent[] = [];
     let ready = false;
-    const unsubscribe = await margin.subscribe(reviewId, scope, (ev) => (ready ? send(ev) : queued.push(ev)));
+    const unsubscribe = await rede.subscribe(reviewId, scope, (ev) => (ready ? send(ev) : queued.push(ev)));
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-store',

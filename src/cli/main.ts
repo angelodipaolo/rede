@@ -25,34 +25,34 @@ const CLI_PATH = fileURLToPath(import.meta.url);
 const WEB_DIR = path.join(path.dirname(CLI_PATH), 'web');
 const DEFAULT_WAIT_SECONDS = 100;
 
-const USAGE = `margin ${VERSION}: local code review with coding agents
+const USAGE = `rede ${VERSION}: local code review with coding agents
 
 Open a review in the browser:
-  margin                  uncommitted changes (or the branch vs. the default branch when clean)
-  margin -w               uncommitted changes, always
-  margin <base>           this branch against <base> (merge-base -> working tree)
-  margin <a>..<b>         a range of commits
-  margin -c <rev>         one commit (also: margin commit <rev>)
+  rede                  uncommitted changes (or the branch vs. the default branch when clean)
+  rede -w               uncommitted changes, always
+  rede <base>           this branch against <base> (merge-base -> working tree)
+  rede <a>..<b>         a range of commits
+  rede -c <rev>         one commit (also: rede commit <rev>)
   --no-open               print the URL, do not open a browser
 
 Server:
-  margin status | list | stop
+  rede status | list | stop
 
 Agents (default output is markdown for an LLM; --json for raw JSON):
-  margin inbox                           print the feedback waiting for you now; never blocks
-  margin wait [--timeout <sec>]          block until a comment needs an answer (watch mode)
-  margin reply <id> [-m <text>] [--resolve]   (reads stdin when -m is absent)
-  margin comment <path>[:<line>[-<end>]] [--old] [--staged|--unstaged] [-m <text>]
-  margin threads [--all|--pending]
-  margin show <id> | resolve <id> | release
-  margin diff [--stat] [--staged|--unstaged]
-  margin guide            print the agent instructions
+  rede inbox                           print the feedback waiting for you now; never blocks
+  rede wait [--timeout <sec>]          block until a comment needs an answer (watch mode)
+  rede reply <id> [-m <text>] [--resolve]   (reads stdin when -m is absent)
+  rede comment <path>[:<line>[-<end>]] [--old] [--staged|--unstaged] [-m <text>]
+  rede threads [--all|--pending]
+  rede show <id> | resolve <id> | release
+  rede diff [--stat] [--staged|--unstaged]
+  rede guide            print the agent instructions
 
 History:
-  margin export [--review <id>] [--since <date>] [-o <file>]
+  rede export [--review <id>] [--since <date>] [-o <file>]
                           write past reviews and threads as Markdown (stdout without -o)
-  margin setup            install the guide as a Claude Code and Codex skill, and a Codex
-                          rule that runs margin agent commands outside the Codex sandbox
+  rede setup            install the guide as a Claude Code and Codex skill, and a Codex
+                          rule that runs rede agent commands outside the Codex sandbox
 Common: --as <agent name>, --review <review id>
 `;
 
@@ -106,7 +106,7 @@ function has(args: Args, ...names: string[]): boolean {
 // ------------------------------------------------------------------ helpers
 
 /**
- * Codex runs a command outside its sandbox (rule from `margin setup`) only when the command has no
+ * Codex runs a command outside its sandbox (rule from `rede setup`) only when the command has no
  * heredoc or redirection, so Codex passes the reply with -m instead of on stdin.
  */
 function argStyle(name: string): boolean {
@@ -204,12 +204,12 @@ async function cmdStatus(args: Args): Promise<void> {
   const info = await findServer(repo);
   if (!info) {
     if (has(args, '--json')) return out(JSON.stringify({ running: false }));
-    return out(`Margin server: not running (${repo.root}).`);
+    return out(`Rede server: not running (${repo.root}).`);
   }
   const c = { repo, port: info.port };
   const [reviews, agents] = await Promise.all([api<ReviewSummary[]>(c, 'GET', '/api/reviews'), api<AgentPresence[]>(c, 'GET', '/api/agents')]);
   if (has(args, '--json')) return out(JSON.stringify({ running: true, server: info, reviews, agents }, null, 2));
-  const lines = [`Margin server: running, pid ${info.pid}, http://127.0.0.1:${info.port}, since ${info.startedAt}`, `Repo: ${repo.root}`];
+  const lines = [`Rede server: running, pid ${info.pid}, http://127.0.0.1:${info.port}, since ${info.startedAt}`, `Repo: ${repo.root}`];
   lines.push(reviews.length ? 'Reviews:' : 'Reviews: none');
   for (const r of reviews) lines.push(`  ${r.id}  ${r.title}  (${r.threadCount} threads, ${r.unresolvedCount} open)  http://127.0.0.1:${info.port}/r/${enc(r.id)}`);
   lines.push(agents.length ? `Agents: ${agents.map((a) => `${a.name} (${a.state})`).join(', ')}` : 'Agents: none connected');
@@ -220,14 +220,14 @@ async function cmdList(args: Args): Promise<void> {
   const c = await connect();
   const reviews = await api<ReviewSummary[]>(c, 'GET', '/api/reviews');
   if (has(args, '--json')) return out(JSON.stringify(reviews, null, 2));
-  if (!reviews.length) return out('No reviews yet. Run `margin` to open one.');
+  if (!reviews.length) return out('No reviews yet. Run `rede` to open one.');
   out(reviews.map((r) => `${r.id}  ${r.title}  (${r.threadCount} threads, ${r.unresolvedCount} open)  http://127.0.0.1:${c.port}/r/${enc(r.id)}`).join('\n'));
 }
 
 async function cmdStop(): Promise<void> {
   const repo = await discoverRepo(process.cwd());
   const info = await stopServer(repo);
-  out(info ? `Stopped the Margin server (pid ${info.pid}).` : 'No Margin server is running for this repo.');
+  out(info ? `Stopped the Rede server (pid ${info.pid}).` : 'No Rede server is running for this repo.');
 }
 
 async function cmdWait(args: Args): Promise<void> {
@@ -241,16 +241,16 @@ async function cmdWait(args: Args): Promise<void> {
   try {
     r = await api<WaitResponse>(c, 'GET', `/api/agent/wait?${q}`);
   } catch (e) {
-    // The server stopped or restarted (a newer margin build) while this wait was blocked.
+    // The server stopped or restarted (a newer rede build) while this wait was blocked.
     if (e instanceof ApiFailure) throw e;
-    return out('The Margin server restarted while waiting. No new comments. Run `margin wait` again.');
+    return out('The Rede server restarted while waiting. No new comments. Run `rede wait` again.');
   }
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
-  if (r.timedOut || !r.threads.length) return out('No new comments. Run `margin wait` again.');
+  if (r.timedOut || !r.threads.length) return out('No new comments. Run `rede wait` again.');
   out(formatWait(r, name, argStyle(name)));
 }
 
-/** `margin inbox`: the same delivery and claiming as `wait`, without blocking (timeout 0). */
+/** `rede inbox`: the same delivery and claiming as `wait`, without blocking (timeout 0). */
 async function cmdInbox(args: Args): Promise<void> {
   const name = agentName(args);
   const c = await connect();
@@ -302,7 +302,7 @@ async function cmdReply(args: Args): Promise<void> {
 
 async function cmdComment(args: Args): Promise<void> {
   const target = args.pos[1];
-  if (!target) throw new UserError('Usage: margin comment <path>[:<line>[-<end>]] [-m <text>]');
+  if (!target) throw new UserError('Usage: rede comment <path>[:<line>[-<end>]] [-m <text>]');
   const m = /^(.*?):(\d+)(?:-(\d+))?$/s.exec(target);
   const rawPath = m ? m[1]! : target;
   const start = m ? Number(m[2]) : null;
@@ -343,7 +343,7 @@ async function cmdThreads(args: Args): Promise<void> {
   const list = await api<AgentThread[]>(c, 'GET', `/api/agent/threads?state=${state}${review ? `&review=${enc(review)}` : ''}`);
   if (has(args, '--json')) return out(JSON.stringify(list, null, 2));
   if (!list.length) return out(`No ${state === 'all' ? '' : state + ' '}threads.`);
-  out([`${list.length} ${state} thread(s). Show one with \`margin show <id>\`.`, ...list.map(formatThreadLine)].join('\n'));
+  out([`${list.length} ${state} thread(s). Show one with \`rede show <id>\`.`, ...list.map(formatThreadLine)].join('\n'));
 }
 
 async function cmdShow(args: Args): Promise<void> {
@@ -385,11 +385,11 @@ function cmdSetup(): void {
   const lines: string[] = [];
   for (const r of setup()) {
     lines.push(`${r.status.padEnd(9)} ${r.path}  (${r.what})`);
-    if (r.status !== 'unchanged' && r.path.endsWith('.rules')) lines.push(...r.content.trimEnd().split('\n').map((l) => `          ${l}`));
+    if ((r.status === 'created' || r.status === 'updated') && r.path.endsWith('.rules')) lines.push(...r.content.trimEnd().split('\n').map((l) => `          ${l}`));
   }
   out(lines.join('\n'));
-  out('Next: after you submit a review in Margin, tell your agent "Address the Margin feedback." To have it answer comments live, say "Watch Margin and answer my comments live."');
-  out('Codex: start a new Codex session so it loads the rule. Run `margin setup` again after you update Margin: the rule lists the margin subcommands Codex may run.');
+  out('Next: after you submit a review in Rede, tell your agent "Address the Rede feedback." To have it answer comments live, say "Watch Rede and answer my comments live."');
+  out('Codex: start a new Codex session so it loads the rule. Run `rede setup` again after you update Rede: the rule lists the rede subcommands Codex may run.');
 }
 
 function rangeSpec(s: string): ReviewSpec | null {
@@ -414,7 +414,7 @@ async function main(argv: string[]): Promise<void> {
     case undefined:
       return cmdOpen(args, null);
     case 'commit':
-      if (!args.pos[1]) throw new UserError('Usage: margin commit <rev>');
+      if (!args.pos[1]) throw new UserError('Usage: rede commit <rev>');
       return cmdOpen(args, { kind: 'commit', rev: args.pos[1] });
     case 'status':
       return cmdStatus(args);
@@ -447,7 +447,7 @@ async function main(argv: string[]): Promise<void> {
     case 'setup':
       return cmdSetup();
     default: {
-      if (args.pos.length > 1) throw new UserError(`Unknown command "${args.pos.join(' ')}". Run margin --help.`);
+      if (args.pos.length > 1) throw new UserError(`Unknown command "${args.pos.join(' ')}". Run rede --help.`);
       const range = rangeSpec(cmd);
       if (range) return cmdOpen(args, range);
       const branch = await currentBranch(process.cwd());
@@ -458,7 +458,7 @@ async function main(argv: string[]): Promise<void> {
 
 main(process.argv.slice(2)).catch((e: unknown) => {
   const msg = e instanceof Error ? e.message : String(e);
-  process.stderr.write(`margin: ${msg}\n`);
+  process.stderr.write(`rede: ${msg}\n`);
   process.exit(e instanceof UserError || e instanceof ApiFailure ? 2 : 1);
 });
 

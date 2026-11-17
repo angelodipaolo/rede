@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Margin dev mock server. Dev-only: lets the web UI run without the real server.
+ * Rede dev mock server. Dev-only: lets the web UI run without the real server.
  *
  * Implements the HTTP contract in src/shared/types.ts with in-memory state and a
  * deterministic generated fixture. Plain Node 22 ESM, node:http only, no dependencies.
@@ -25,7 +25,7 @@ import crypto from 'node:crypto';
 
 function parseArgs(argv) {
   const o = {
-    port: Number(process.env.MARGIN_PORT) || 4319,
+    port: Number(process.env.REDE_PORT) || 4319,
     files: 300,
     small: false,
     seed: 42,
@@ -449,7 +449,7 @@ const LANGS = {
     u: '  ',
     header: (r) => [`/* ${sentence(r, 8)}. */`, '', ':root {', `  --${kebab(noun(r), 'color')}: #${r.int(0x100000, 0xffffff).toString(16)};`, `  --${kebab(noun(r), 'gap')}: ${r.int(2, 24)}px;`, '}', ''],
     footer: () => [],
-    stmt: (r, ind) => [`${ind || '  '}${r.pick(['margin', 'padding', 'gap', 'border-radius', 'font-size', 'line-height', 'width', 'max-width'])}: ${r.int(0, 64)}px;`],
+    stmt: (r, ind) => [`${ind || '  '}${r.pick(['rede', 'padding', 'gap', 'border-radius', 'font-size', 'line-height', 'width', 'max-width'])}: ${r.int(0, 64)}px;`],
     block(r) {
       if (r.chance(0.12)) {
         const out = ['/*'];
@@ -1904,7 +1904,7 @@ async function route(req, res) {
 
   if (p === '/api/health') {
     if (M !== 'GET') throw new HttpError(405, 'method not allowed');
-    return send(res, 200, { ok: true, name: 'margin', version: VERSION, repo: REPO, pid: process.pid });
+    return send(res, 200, { ok: true, name: 'rede', version: VERSION, repo: REPO, pid: process.pid });
   }
 
   if (p === '/api/reviews') {
@@ -2261,5 +2261,5 @@ const server = http.createServer((req, res) => {
 });
 server.listen(OPTS.port, '127.0.0.1', () => {
   const counts = SCOPES.map((s) => `${s}=${scopeFiles(working, s).length}`).join(' ');
-  console.log(`margin mock server: http://127.0.0.1:${OPTS.port}  (files ${counts}, threads ${threads.size}, generated in ${genMs}ms${OPTS.agent ? '' : ', simulated agent off'})`);
+  console.log(`rede mock server: http://127.0.0.1:${OPTS.port}  (files ${counts}, threads ${threads.size}, generated in ${genMs}ms${OPTS.agent ? '' : ', simulated agent off'})`);
 });

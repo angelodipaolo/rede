@@ -54,7 +54,7 @@ import {
   gitLine,
   hashObject,
   headAndTree,
-  marginDir,
+  redeDir,
   mergeBase,
   missingObjects,
   readHeadSync,
@@ -86,7 +86,7 @@ export interface ReviewState {
   at: number;
 }
 
-export interface MarginOptions {
+export interface RedeOptions {
   repo: RepoPaths;
   store: Store;
   version: string;
@@ -124,14 +124,14 @@ export interface HistoryQuery {
   limit?: number;
 }
 
-/** Loose objects in Margin's private object directory above which it is emptied at start. */
+/** Loose objects in Rede's private object directory above which it is emptied at start. */
 const PRIVATE_OBJECTS_MAX = 20_000;
 
 /**
- * Sets up Margin's private object directory (<margin dir>/objects). Snapshots write their
+ * Sets up Rede's private object directory (<rede dir>/objects). Snapshots write their
  * blobs and trees there, never into the repository's object store, so a review that polls a
  * changing working tree adds no loose objects to the repository and never triggers its auto gc.
- * Nothing in the repository refers to these objects, so Margin can delete them: at start, when
+ * Nothing in the repository refers to these objects, so Rede can delete them: at start, when
  * there are many, it empties the directory together with the private index files that point
  * into it. Must run before any snapshot (no in-memory state refers to old objects yet).
  */
@@ -229,7 +229,7 @@ function batchOfLatest(msgs: MessageRow[]): number | null {
 /** Text of blobs by id. Blobs never change, so a plain bounded cache is safe. */
 const textCache = new Map<string, Buffer>();
 
-export class Margin {
+export class Rede {
   readonly repo: RepoPaths;
   readonly store: Store;
   readonly version: string;
@@ -259,14 +259,14 @@ export class Margin {
   /** Called on any API activity; the server uses it for idle shutdown. */
   onActivity: () => void = () => {};
 
-  constructor(opts: MarginOptions) {
+  constructor(opts: RedeOptions) {
     this.repo = opts.repo;
     this.store = opts.store;
     this.version = opts.version;
     this.claimTimeoutMs = opts.claimTimeoutMs ?? 15 * 60_000;
     this.pollMs = opts.pollMs ?? 2000;
     this.lingerMs = opts.presenceLingerMs ?? 5000;
-    const dir = marginDir(opts.repo);
+    const dir = redeDir(opts.repo);
     prepareObjectStore(opts.repo, dir);
     this.snapshotter = new WorkingSnapshotter(opts.repo.root, opts.repo.gitDir, dir);
     this.indexReader = new IndexTreeReader(opts.repo.root, opts.repo.gitDir, dir);
@@ -818,7 +818,7 @@ export class Margin {
   toThread(t: ThreadRow, scope: ReviewScope, state: ReviewState | null, msgs = this.store.messagesOf(t.id), forAgent = false): Thread {
     let inScope = false;
     let viewScope: ReviewScope = t.homeScope;
-    let loc = null as ReturnType<Margin['locate']>;
+    let loc = null as ReturnType<Rede['locate']>;
     if (state) {
       loc = this.locate(t, state, scope);
       const isSide = SCOPE_SIDES[scope].old === t.target || SCOPE_SIDES[scope].new === t.target;
@@ -859,7 +859,7 @@ export class Margin {
   }
 
   private missingThread(tid: number): HttpError {
-    return notFound(`Thread ${tid} not found. It may have been deleted. Run \`margin threads --all\` to list threads.`);
+    return notFound(`Thread ${tid} not found. It may have been deleted. Run \`rede threads --all\` to list threads.`);
   }
 
   private requireThread(tid: number): ThreadRow {
@@ -1396,7 +1396,7 @@ export class Margin {
     if (signal?.aborted) return { threads: [], batches: [], timedOut: true };
     const now = this.takeDeliverable(agent, reviewId);
     if (now.length) return this.handOver(agent, now, signal);
-    // timeout 0 (`margin inbox`): never block, and do not show the agent as waiting.
+    // timeout 0 (`rede inbox`): never block, and do not show the agent as waiting.
     if (timeoutMs <= 0) return { threads: [], batches: [], timedOut: true };
     const since = nowIso();
     const rows = await new Promise<ThreadRow[] | null>((resolve) => {

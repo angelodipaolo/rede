@@ -105,7 +105,7 @@ function AgentStatus({ t }: { t: Thread }) {
         <span>{hasPending(t) ? 'Your sent messages wait for an agent. The pending one goes with your review.' : 'Waiting for an agent'}</span>
         {none && (
           <span class="hint">
-            · tell your agent: <q>address margin feedback</q>{' '}
+            · tell your agent: <q>address rede feedback</q>{' '}
             <button
               class="link"
               title="Prompts and setup"

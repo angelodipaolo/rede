@@ -2,14 +2,14 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverRepo, marginDir } from '../src/server/git.ts';
-import { Margin, type MarginOptions } from '../src/server/service.ts';
+import { discoverRepo, redeDir } from '../src/server/git.ts';
+import { Rede, type RedeOptions } from '../src/server/service.ts';
 import { Store } from '../src/server/store.ts';
 
 export class TempRepo {
   readonly dir: string;
   constructor() {
-    this.dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'margin-test-')));
+    this.dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rede-test-')));
     this.git('init', '-q', '-b', 'main');
     this.git('config', 'user.email', 't@example.com');
     this.git('config', 'user.name', 'Test');
@@ -43,10 +43,10 @@ export function lines(n: number, prefix = 'line'): string {
   return Array.from({ length: n }, (_, i) => `${prefix} ${i + 1}`).join('\n') + '\n';
 }
 
-export async function makeMargin(repo: TempRepo, opts: Partial<MarginOptions> = {}): Promise<Margin> {
+export async function makeRede(repo: TempRepo, opts: Partial<RedeOptions> = {}): Promise<Rede> {
   const paths = await discoverRepo(repo.dir);
-  const store = await Store.open(path.join(marginDir(paths), 'margin.db'));
-  return new Margin({ repo: paths, store, version: 'test', pollMs: 100, presenceLingerMs: 0, ...opts });
+  const store = await Store.open(path.join(redeDir(paths), 'rede.db'));
+  return new Rede({ repo: paths, store, version: 'test', pollMs: 100, presenceLingerMs: 0, ...opts });
 }
 
 export const human = { kind: 'human' as const, name: 'you' };

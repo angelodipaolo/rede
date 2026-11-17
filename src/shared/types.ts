@@ -1,5 +1,5 @@
 /**
- * Margin: shared contract between the server, the CLI and the web UI.
+ * Rede: shared contract between the server, the CLI and the web UI.
  *
  * This file is the single source of truth for the HTTP API. The server
  * implements it, the web UI and the agent CLI consume it. Change it only
@@ -192,7 +192,7 @@ export interface Anchor {
 export type AgentState = 'idle' | 'pending' | 'working';
 
 export interface Thread {
-  /** Small integer, unique in the repo. The agent CLI uses it: `margin reply 12`. */
+  /** Small integer, unique in the repo. The agent CLI uses it: `rede reply 12`. */
   id: number;
   reviewId: string;
   /**
@@ -213,7 +213,7 @@ export interface Thread {
   snippet: string[];
   /**
    * The code as it was when the thread was created: the diff lines around the anchor, and the
-   * commit and branch checked out then. Null for threads created before Margin stored it; the UI
+   * commit and branch checked out then. Null for threads created before Rede stored it; the UI
    * then falls back to `snippet`.
    */
   original: ThreadOriginal | null;
@@ -280,7 +280,7 @@ export interface ReviewBatch {
   submittedAt: string;
   /** Threads that received a message from this batch. */
   threadIds: number[];
-  /** HEAD commit when the review was submitted. Null for batches stored before Margin kept it, or when HEAD did not resolve. */
+  /** HEAD commit when the review was submitted. Null for batches stored before Rede kept it, or when HEAD did not resolve. */
   head: string | null;
   /** Branch checked out when the review was submitted. Null when HEAD was detached or unknown. */
   branch: string | null;
@@ -410,7 +410,7 @@ export interface HistoryCounts {
 
 export interface Health {
   ok: true;
-  name: 'margin';
+  name: 'rede';
   version: string;
   repo: RepoInfo;
   pid: number;

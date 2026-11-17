@@ -33,7 +33,7 @@ export interface ThreadRow {
   outdatedReason: 'changed' | 'file-gone' | null;
   resolved: boolean;
   noteOnly: boolean;
-  /** The code when the thread was created. Null for threads stored before Margin kept it. */
+  /** The code when the thread was created. Null for threads stored before Rede kept it. */
   original: ThreadOriginal | null;
   /** Mode of the latest submitted human message. */
   mode: ReviewMode;

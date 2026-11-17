@@ -8,12 +8,12 @@ import { entryMarkdown, historyMarkdown } from '../src/shared/history-md.ts';
 import { formatAgentThread } from '../src/cli/format.ts';
 import { codexRules, setup as setupFiles } from '../src/cli/guide.ts';
 import { sandboxAdvice } from '../src/cli/client.ts';
-import type { Margin } from '../src/server/service.ts';
-import { agent, human, lines, makeMargin, TempRepo } from './helpers.ts';
+import type { Rede } from '../src/server/service.ts';
+import { agent, human, lines, makeRede, TempRepo } from './helpers.ts';
 
 describe('inbox: wait with timeout 0', () => {
   let repo: TempRepo;
-  let m: Margin;
+  let m: Rede;
   afterEach(() => {
     m?.close();
     repo?.cleanup();
@@ -24,7 +24,7 @@ describe('inbox: wait with timeout 0', () => {
     repo.write('a.ts', lines(30));
     repo.commit();
     repo.write('a.ts', lines(30).replace('line 5\n', 'line five\n'));
-    m = await makeMargin(repo, { presenceLingerMs: 5000 });
+    m = await makeRede(repo, { presenceLingerMs: 5000 });
     await m.openReview({ kind: 'working' });
   }
 
@@ -59,7 +59,7 @@ describe('inbox: wait with timeout 0', () => {
 
 describe('code snapshot, outdated reasons and the live-view rule', () => {
   let repo: TempRepo;
-  let m: Margin;
+  let m: Rede;
   afterEach(() => {
     m?.close();
     repo?.cleanup();
@@ -73,7 +73,7 @@ describe('code snapshot, outdated reasons and the live-view rule', () => {
     repo.git('checkout', '-q', '-b', 'feature');
     repo.write('a.ts', lines(40).replace('line 20\n', 'line twenty\nline twenty-b\n'));
     repo.write('b.ts', lines(10, 'b').replace('b 3\n', 'b three\n'));
-    m = await makeMargin(repo);
+    m = await makeRede(repo);
     await m.openReview({ kind: 'working' });
   }
 
@@ -162,7 +162,7 @@ describe('code snapshot, outdated reasons and the live-view rule', () => {
     expect(r.threads.map((t) => t.id)).toEqual([a.id]);
   });
 
-  it('an outdated thread shows its original code to the agent (`margin show`)', async () => {
+  it('an outdated thread shows its original code to the agent (`rede show`)', async () => {
     await start();
     const a = await m.createThread('working', 'all', { anchor: { path: 'a.ts', side: 'new', startLine: 20, endLine: 20 }, body: 'qa', author: human });
     repo.write('a.ts', lines(40).replace('line 20\n', 'changed\n'));
@@ -186,7 +186,7 @@ describe('code snapshot, outdated reasons and the live-view rule', () => {
 
 describe('history endpoint', () => {
   let repo: TempRepo;
-  let m: Margin;
+  let m: Rede;
   afterEach(() => {
     m?.close();
     repo?.cleanup();
@@ -199,7 +199,7 @@ describe('history endpoint', () => {
     repo.commit();
     repo.write('src/a.ts', lines(50).replace('line 10\n', 'line ten\n'));
     repo.write('docs/b.md', lines(50, 'doc').replace('doc 10\n', 'doc ten\n'));
-    m = await makeMargin(repo);
+    m = await makeRede(repo);
     await m.openReview({ kind: 'working' });
   }
   const on = (p: string, line: number, body: string, extra: Record<string, unknown> = {}) =>
@@ -290,7 +290,7 @@ describe('history endpoint', () => {
     await on('docs/b.md', 3, 'A one-off');
     const h = m.history();
     const md = historyMarkdown(h.entries, { repo: 'demo', exportedAt: '2026-11-16T10:00:00Z' });
-    expect(md).toContain('# Margin review history · demo');
+    expect(md).toContain('# Rede review history · demo');
     expect(md).toContain('1 review · 1 one-off thread');
     expect(md).toContain(`## Review #${b.id} · Implement ·`);
     expect(md).toContain('> Please tidy');
@@ -306,22 +306,22 @@ describe('history endpoint', () => {
 });
 
 describe('setup upgrades the Codex rule', () => {
-  it('rewrites a rule from an older margin so it lists inbox; then it is unchanged', () => {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'margin-home-')));
+  it('rewrites a rule from an older rede so it lists inbox; then it is unchanged', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rede-home-')));
     try {
       const env = { PATH: '/nonexistent', CODEX_HOME: path.join(home, 'codex') };
-      const file = path.join(home, 'codex', 'rules', 'margin.rules');
+      const file = path.join(home, 'codex', 'rules', 'rede.rules');
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const old = codexRules([]).replace('"inbox", ', '');
       expect(old).not.toContain('"inbox"');
       fs.writeFileSync(file, old);
       // An old rule: the sandbox advice says to run setup again.
-      expect(sandboxAdvice({ CODEX_SANDBOX: 'seatbelt', CODEX_HOME: env.CODEX_HOME }, 'inbox')).toContain('from an older Margin');
+      expect(sandboxAdvice({ CODEX_SANDBOX: 'seatbelt', CODEX_HOME: env.CODEX_HOME }, 'inbox')).toContain('from an older Rede');
       const r = setupFiles(home, env);
       expect(r[2]!.status).toBe('updated');
-      expect(fs.readFileSync(file, 'utf8')).toContain('pattern = ["margin", ["inbox", "wait", "reply"');
+      expect(fs.readFileSync(file, 'utf8')).toContain('pattern = ["rede", ["inbox", "wait", "reply"');
       expect(setupFiles(home, env).map((x) => x.status)).toEqual(['unchanged', 'unchanged', 'unchanged']);
-      expect(sandboxAdvice({ CODEX_SANDBOX: 'seatbelt', CODEX_HOME: env.CODEX_HOME }, 'inbox')).toContain('did not match the margin rule');
+      expect(sandboxAdvice({ CODEX_SANDBOX: 'seatbelt', CODEX_HOME: env.CODEX_HOME }, 'inbox')).toContain('did not match the rede rule');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -339,7 +339,7 @@ describe.skipIf(!fs.existsSync(CLI))('inbox and export (built CLI)', () => {
   const run = (args: string[], input?: string) =>
     new Promise<{ code: number; out: string; err: string; ms: number }>((resolve) => {
       const t0 = Date.now();
-      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...process.env, CLAUDECODE: '', MARGIN_AGENT: '' } }, (e, out, err) =>
+      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...process.env, CLAUDECODE: '', REDE_AGENT: '' } }, (e, out, err) =>
         resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out, err, ms: Date.now() - t0 }),
       );
       child.stdin?.end(input ?? '');
@@ -356,7 +356,7 @@ describe.skipIf(!fs.existsSync(CLI))('inbox and export (built CLI)', () => {
     // An agent's own thread is not feedback for it.
     expect((await run(['inbox'])).out).toBe('No feedback is waiting.\n');
     // The human comments in the browser (HTTP).
-    const port = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'margin', 'server.json'), 'utf8')).port as number;
+    const port = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'rede', 'server.json'), 'utf8')).port as number;
     const res = await fetch(`http://127.0.0.1:${port}/api/reviews/working/threads`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -368,13 +368,13 @@ describe.skipIf(!fs.existsSync(CLI))('inbox and export (built CLI)', () => {
     expect(got.ms).toBeLessThan(5000);
     expect(got.out).toContain('## Thread #2');
     expect(got.out).toContain('Why three?');
-    expect(got.out).toContain('run `margin inbox` once more');
-    expect(got.out).not.toContain('run `margin wait`');
+    expect(got.out).toContain('run `rede inbox` once more');
+    expect(got.out).not.toContain('run `rede wait`');
     // Claimed by the first inbox.
     expect((await run(['inbox'])).out).toBe('No feedback is waiting.\n');
     const reply = await run(['reply', '2', '-m', 'Because.']);
     expect(reply.code).toBe(0);
-    expect(reply.out).not.toContain('margin wait');
+    expect(reply.out).not.toContain('rede wait');
     const exp = path.join(repo.dir, 'history.md');
     const e = await run(['export', '-o', exp]);
     expect(e.code).toBe(0);
@@ -389,13 +389,13 @@ describe('migration to review history', () => {
   afterEach(() => repo?.cleanup());
 
   it('adds the snapshot and batch columns in place, keeping every row; old threads fall back to the snippet', async () => {
-    const { discoverRepo, marginDir } = await import('../src/server/git.ts');
+    const { discoverRepo, redeDir } = await import('../src/server/git.ts');
     const { loadSqlite, Store } = await import('../src/server/store.ts');
     repo = new TempRepo();
     repo.write('a.ts', lines(10));
     repo.commit();
     repo.write('a.ts', lines(10).replace('line 2\n', 'line two\n'));
-    const file = path.join(marginDir(await discoverRepo(repo.dir)), 'margin.db');
+    const file = path.join(redeDir(await discoverRepo(repo.dir)), 'rede.db');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const { DatabaseSync } = await loadSqlite();
     const old = new DatabaseSync(file);
@@ -434,7 +434,7 @@ describe('migration to review history', () => {
     store.close();
     (await Store.open(file)).close(); // a second open is a no-op
 
-    const m = await makeMargin(repo);
+    const m = await makeRede(repo);
     try {
       const r = await m.getReview('working');
       expect(r.threads.map((t) => [t.id, t.original, t.snippet])).toEqual([[1, null, ['line two']]]);

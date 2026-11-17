@@ -361,11 +361,11 @@ export function HistoryApp() {
 
   useEffect(() => {
     applyTheme();
-    document.title = 'History · Margin';
+    document.title = 'History · Rede';
     api.reviews().then(setReviews, () => {});
     api.health().then((h) => {
       setRepo(h.repo.name);
-      document.title = `History · ${h.repo.name} · Margin`;
+      document.title = `History · ${h.repo.name} · Rede`;
     }, () => {});
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -457,7 +457,7 @@ export function HistoryApp() {
         </a>
         <div class="ident">
           <a class="repo" href="/">
-            {repo || 'Margin'}
+            {repo || 'Rede'}
           </a>
           <span class="title">
             <Icon name="history" size={14} /> History

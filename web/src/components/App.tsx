@@ -134,7 +134,7 @@ export function ReviewApp({ id }: { id: string }) {
   }, [id]);
   useEffect(() => {
     const r = S.review;
-    document.title = r ? `${r.title} · ${r.repo.name} · Margin` : 'Margin';
+    document.title = r ? `${r.title} · ${r.repo.name} · Rede` : 'Rede';
   });
   return (
     <div class="app">
@@ -161,11 +161,11 @@ export function ReviewList() {
   }, []);
   return (
     <div class="review-list">
-      <h1>Margin</h1>
-      {err && <p class="muted">Could not reach the Margin server: {err}</p>}
+      <h1>Rede</h1>
+      {err && <p class="muted">Could not reach the Rede server: {err}</p>}
       {list && list.length === 0 && (
         <p class="muted">
-          No reviews yet. Run <code>margin</code> inside a git repository to start one.
+          No reviews yet. Run <code>rede</code> inside a git repository to start one.
         </p>
       )}
       {list && list.length > 0 && (

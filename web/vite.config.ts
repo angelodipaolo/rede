@@ -4,7 +4,7 @@ import preact from '@preact/preset-vite';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-const port = process.env.MARGIN_PORT ?? '4319';
+const port = process.env.REDE_PORT ?? '4319';
 
 /**
  * Built pages get a Content Security Policy: nothing loads from outside 127.0.0.1, even
@@ -13,7 +13,7 @@ const port = process.env.MARGIN_PORT ?? '4319';
  */
 function csp(): Plugin {
   return {
-    name: 'margin-csp',
+    name: 'rede-csp',
     apply: 'build',
     transformIndexHtml(html) {
       const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
@@ -49,7 +49,7 @@ export default defineConfig({
   },
   worker: { format: 'es' },
   server: {
-    port: Number(process.env.MARGIN_WEB_PORT ?? 5173),
+    port: Number(process.env.REDE_WEB_PORT ?? 5173),
     strictPort: false,
     proxy: {
       '/api': { target: `http://127.0.0.1:${port}`, changeOrigin: false },

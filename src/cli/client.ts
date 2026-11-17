@@ -4,7 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { Health } from '../shared/types.ts';
-import { marginDir, type RepoPaths } from '../server/git.ts';
+import { redeDir, type RepoPaths } from '../server/git.ts';
 import { VERSION } from '../server/errors.ts';
 import { AGENT_COMMANDS } from './guide.ts';
 import { buildId, readServerInfo, serverInfoPath, type ServerInfo } from '../server/server.ts';
@@ -86,7 +86,7 @@ export function streamTo(port: number, urlPath: string, out: NodeJS.WritableStre
 // ------------------------------------------------------------------ server lifecycle
 
 /** A failure the agent or the user must act on. main() prints the message as is. */
-export class MarginError extends Error {}
+export class RedeError extends Error {}
 
 const CODEX_ENV_KEYS = ['CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_TOOL_CALL_ID', 'CODEX_CI'];
 
@@ -99,7 +99,7 @@ export function inCodex(env: NodeJS.ProcessEnv = process.env): boolean {
  * they run. When both are present (one harness started the other), the nearest ancestor process wins.
  */
 export function detectAgentName(env: NodeJS.ProcessEnv = process.env, ancestors: () => string[] = processAncestors): string {
-  if (env.MARGIN_AGENT?.trim()) return env.MARGIN_AGENT.trim();
+  if (env.REDE_AGENT?.trim()) return env.REDE_AGENT.trim();
   const claude = !!env.CLAUDECODE;
   const codex = inCodex(env);
   if (claude && codex) {
@@ -137,15 +137,15 @@ function processAncestors(): string[] {
   }
 }
 
-/** The rules file `margin setup` writes for Codex. */
+/** The rules file `rede setup` writes for Codex. */
 export function codexRulesFile(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'rules', 'margin.rules');
+  return path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'rules', 'rede.rules');
 }
 
-/** Why a sandbox blocks margin and what to do, as "<reason>\n<fix>". */
+/** Why a sandbox blocks rede and what to do, as "<reason>\n<fix>". */
 export function sandboxAdvice(env: NodeJS.ProcessEnv = process.env, subcommand: string | undefined = process.argv[2]): string {
   if (!inCodex(env)) {
-    return 'You are probably in a sandbox.\nFix: run margin commands outside the sandbox (allow the margin command, or approve escalation).';
+    return 'You are probably in a sandbox.\nFix: run rede commands outside the sandbox (allow the rede command, or approve escalation).';
   }
   let rules: string | null = null;
   try {
@@ -153,22 +153,22 @@ export function sandboxAdvice(env: NodeJS.ProcessEnv = process.env, subcommand: 
   } catch {
     /* not installed */
   }
-  // A rule written by an older margin does not list newer subcommands (such as `inbox`).
+  // A rule written by an older rede does not list newer subcommands (such as `inbox`).
   if (rules !== null && subcommand && AGENT_COMMANDS.includes(subcommand) && !rules.includes(`"${subcommand}"`)) {
     return (
-      `You are in the Codex sandbox, and the margin rule is from an older Margin: it does not list \`margin ${subcommand}\`.\n` +
-      'Fix: rerun this command with escalated permissions, and ask the user to run `margin setup` in a terminal and start a new Codex session.'
+      `You are in the Codex sandbox, and the rede rule is from an older Rede: it does not list \`rede ${subcommand}\`.\n` +
+      'Fix: rerun this command with escalated permissions, and ask the user to run `rede setup` in a terminal and start a new Codex session.'
     );
   }
   if (rules !== null) {
     return (
-      'You are in the Codex sandbox: this command did not match the margin rule from `margin setup`.\n' +
+      'You are in the Codex sandbox: this command did not match the rede rule from `rede setup`.\n' +
       "Fix: rerun it as one plain command: no pipe, &&, redirection, heredoc or VAR= prefix, and no '\\'' escape in the -m text (write ’ instead of ')."
     );
   }
   return (
-    'You are in the Codex sandbox, and the margin rule is not installed.\n' +
-    'Fix: rerun this command with escalated permissions, or ask the user to run `margin setup` in a terminal and start a new Codex session.'
+    'You are in the Codex sandbox, and the rede rule is not installed.\n' +
+    'Fix: rerun this command with escalated permissions, or ask the user to run `rede setup` in a terminal and start a new Codex session.'
   );
 }
 
@@ -186,7 +186,7 @@ async function probe(repo: RepoPaths, info: ServerInfo | null): Promise<Probe> {
   if (!info) return { state: 'down' };
   try {
     const h = await request<Health>(info.port, 'GET', '/api/health', undefined, 3000);
-    return h.name === 'margin' && h.pid === info.pid && h.repo.root === repo.root ? { state: 'up' } : { state: 'down' };
+    return h.name === 'rede' && h.pid === info.pid && h.repo.root === repo.root ? { state: 'up' } : { state: 'down' };
   } catch (e) {
     const code = errCode(e);
     if (code && BLOCKED_CONNECT.has(code)) return { state: 'blocked', code };
@@ -211,12 +211,12 @@ export async function findServer(repo: RepoPaths): Promise<ServerInfo | null> {
   if (p.state === 'up') return info;
   if (p.state === 'down') return null;
   if (p.state === 'blocked') {
-    throw new MarginError(
-      `cannot reach the Margin server on 127.0.0.1:${info!.port} (connection blocked: ${p.code}). ${sandboxAdvice()}`,
+    throw new RedeError(
+      `cannot reach the Rede server on 127.0.0.1:${info!.port} (connection blocked: ${p.code}). ${sandboxAdvice()}`,
     );
   }
-  throw new MarginError(
-    `the Margin server (pid ${info!.pid}, 127.0.0.1:${info!.port}) does not answer. If it stays stuck, stop it with \`kill ${info!.pid}\` and run margin again.`,
+  throw new RedeError(
+    `the Rede server (pid ${info!.pid}, 127.0.0.1:${info!.port}) does not answer. If it stays stuck, stop it with \`kill ${info!.pid}\` and run rede again.`,
   );
 }
 
@@ -249,9 +249,9 @@ export function serverIsOlder(server: Pick<ServerInfo, 'version' | 'build'>, cli
   return server.build === undefined || server.build < cli.build;
 }
 
-function cannotWrite(dir: string, code: string): MarginError {
-  return new MarginError(
-    `no Margin server runs for this repo, and this command may not start one: it cannot write ${dir} (${code}). ${sandboxAdvice()}`,
+function cannotWrite(dir: string, code: string): RedeError {
+  return new RedeError(
+    `no Rede server runs for this repo, and this command may not start one: it cannot write ${dir} (${code}). ${sandboxAdvice()}`,
   );
 }
 
@@ -312,7 +312,7 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
   const isCurrent = (i: ServerInfo) => !serverIsOlder(i, cli);
   const existing = await findServer(repo);
   if (existing && isCurrent(existing)) return existing;
-  const dir = marginDir(repo);
+  const dir = redeDir(repo);
   const lock = path.join(dir, 'start.lock');
   let got: true | ServerInfo | null;
   try {
@@ -328,8 +328,8 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
     if (got) return got;
     if (existing) return existing;
     const owner = lockOwner(lock);
-    throw new MarginError(
-      `another margin command${owner ? ` (pid ${owner})` : ''} is starting the Margin server and still holds ${lock} after 20 s. Run margin again in a moment. If no margin command runs, delete that file.`,
+    throw new RedeError(
+      `another rede command${owner ? ` (pid ${owner})` : ''} is starting the Rede server and still holds ${lock} after 20 s. Run rede again in a moment. If no rede command runs, delete that file.`,
     );
   }
   try {
@@ -351,7 +351,7 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
     const logFile = path.join(dir, 'server.log');
     const log = fs.openSync(logFile, 'a');
     const env = { ...process.env };
-    if (preferredPort) env.MARGIN_PREFERRED_PORT = String(preferredPort);
+    if (preferredPort) env.REDE_PREFERRED_PORT = String(preferredPort);
     const child = spawn(process.execPath, [cliPath, '__serve'], {
       cwd: repo.root,
       detached: true,
@@ -367,7 +367,7 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
       if (info && info.pid === child.pid && (await probe(repo, info)).state === 'up') return info;
       if (child.exitCode !== null) break;
     }
-    throw new MarginError(`the Margin server did not start. ${lastLine(logFile)}See ${logFile}.`);
+    throw new RedeError(`the Rede server did not start. ${lastLine(logFile)}See ${logFile}.`);
   } finally {
     try {
       fs.unlinkSync(lock);

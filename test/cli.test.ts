@@ -44,7 +44,7 @@ describe('agent name', () => {
     expect(detectAgentName({ CODEX_THREAD_ID: 'x' }, () => [])).toBe('codex');
     expect(detectAgentName({ CLAUDECODE: '1' }, () => [])).toBe('claude');
     expect(detectAgentName({}, () => [])).toBe('agent');
-    expect(detectAgentName({ MARGIN_AGENT: 'bob', CLAUDECODE: '1' }, () => [])).toBe('bob');
+    expect(detectAgentName({ REDE_AGENT: 'bob', CLAUDECODE: '1' }, () => [])).toBe('bob');
   });
 
   it('picks the nearest harness when one runs inside the other', () => {
@@ -57,14 +57,14 @@ describe('agent name', () => {
 
 describe('sandbox advice', () => {
   it('tells a missing Codex rule from a command the rule did not match', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'margin-codex-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rede-codex-'));
     try {
       const env = { CODEX_SANDBOX: 'seatbelt', CODEX_HOME: home };
-      expect(sandboxAdvice(env)).toContain('the margin rule is not installed');
+      expect(sandboxAdvice(env)).toContain('the rede rule is not installed');
       expect(sandboxAdvice(env)).toContain('escalated permissions');
       fs.mkdirSync(path.join(home, 'rules'));
-      fs.writeFileSync(path.join(home, 'rules', 'margin.rules'), codexRules([]));
-      expect(sandboxAdvice(env)).toContain('did not match the margin rule');
+      fs.writeFileSync(path.join(home, 'rules', 'rede.rules'), codexRules([]));
+      expect(sandboxAdvice(env)).toContain('did not match the rede rule');
       expect(sandboxAdvice({})).toContain('outside the sandbox');
       for (const env2 of [env, {}]) expect(sandboxAdvice(env2).split('\n')).toHaveLength(2);
     } finally {
@@ -75,27 +75,27 @@ describe('sandbox advice', () => {
 
 describe('setup', () => {
   it('installs the skills and the Codex rule idempotently', () => {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'margin-home-')));
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rede-home-')));
     try {
       const bin = path.join(home, 'bin');
       fs.mkdirSync(bin);
-      fs.writeFileSync(path.join(bin, 'margin'), '#!/bin/sh\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'rede'), '#!/bin/sh\n', { mode: 0o755 });
       const env = { PATH: `${bin}:/nonexistent`, CODEX_HOME: path.join(home, 'codex') };
       const first = setup(home, env);
       expect(first.map((r) => r.status)).toEqual(['created', 'created', 'created']);
-      const rules = fs.readFileSync(path.join(home, 'codex', 'rules', 'margin.rules'), 'utf8');
-      expect(rules).toContain('pattern = ["margin", ["inbox", "wait", "reply"');
+      const rules = fs.readFileSync(path.join(home, 'codex', 'rules', 'rede.rules'), 'utf8');
+      expect(rules).toContain('pattern = ["rede", ["inbox", "wait", "reply"');
       expect(rules).toContain('decision = "allow"');
-      expect(rules).toContain(`host_executable(name = "margin", paths = ["${path.join(bin, 'margin')}"])`);
+      expect(rules).toContain(`host_executable(name = "rede", paths = ["${path.join(bin, 'rede')}"])`);
       expect(rules).not.toContain('"stop"');
-      expect(fs.existsSync(path.join(home, '.claude', 'skills', 'margin', 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(home, '.claude', 'skills', 'rede', 'SKILL.md'))).toBe(true);
       expect(setup(home, env).map((r) => r.status)).toEqual(['unchanged', 'unchanged', 'unchanged']);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('writes no host_executable line when margin is not on PATH', () => {
+  it('writes no host_executable line when rede is not on PATH', () => {
     expect(codexRules([])).not.toContain('host_executable');
   });
 });
@@ -155,8 +155,8 @@ describe('wait output with reviews', () => {
     expect(formatThreadLine(thread(1, 'implement', 4))).toContain('[working, implement]');
   });
 
-  it('the installed skill defers to margin guide, which explains the modes', () => {
-    expect(skillFile()).toContain('Run `margin guide`');
+  it('the installed skill defers to rede guide, which explains the modes', () => {
+    expect(skillFile()).toContain('Run `rede guide`');
     expect(skillFile()).not.toContain('## The loop');
     for (const m of ['ASK', 'DISCUSS', 'IMPLEMENT']) expect(GUIDE).toContain(`- ${m}:`);
   });

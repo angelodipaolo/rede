@@ -1,5 +1,5 @@
 /**
- * Review history as readable Markdown. Pure (no Node or DOM APIs): the CLI (`margin export`) and
+ * Review history as readable Markdown. Pure (no Node or DOM APIs): the CLI (`rede export`) and
  * the web UI ("Copy as Markdown") both use it.
  */
 import type { HistoryEntry, OriginalLine, Thread } from './types.ts';
@@ -84,7 +84,7 @@ export function entryMarkdown(e: HistoryEntry): string {
 export function historyMarkdown(entries: HistoryEntry[], opts: { repo: string; exportedAt: string; filter?: string }): string {
   const batches = entries.filter((e) => e.kind === 'batch').length;
   const head = [
-    `# Margin review history · ${opts.repo}`,
+    `# Rede review history · ${opts.repo}`,
     '',
     `Exported ${stamp(opts.exportedAt)} · ${batches} review${batches === 1 ? '' : 's'} · ${entries.length - batches} one-off thread${entries.length - batches === 1 ? '' : 's'}${opts.filter ? ` · ${opts.filter}` : ''}`,
     '',

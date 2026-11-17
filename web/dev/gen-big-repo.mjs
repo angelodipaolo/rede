@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Dev tool: builds a scratch git repo with a very large uncommitted diff, for
- * testing Margin at scale against the real server.
+ * testing Rede at scale against the real server.
  *
  *   node web/dev/gen-big-repo.mjs <dir> [--files 1500] [--seed 7]
  *   node web/dev/gen-big-repo.mjs <dir> --churn [--every 3] [--count 3]

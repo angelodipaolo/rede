@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Margin } from '../src/server/service.ts';
-import { agent, human, lines, makeMargin, TempRepo } from './helpers.ts';
+import type { Rede } from '../src/server/service.ts';
+import { agent, human, lines, makeRede, TempRepo } from './helpers.ts';
 
 describe('agent state, wait, claims and redelivery', () => {
   let repo: TempRepo;
-  let m: Margin;
+  let m: Rede;
   afterEach(() => {
     m?.close();
     repo?.cleanup();
@@ -15,7 +15,7 @@ describe('agent state, wait, claims and redelivery', () => {
     repo.write('a.ts', lines(20));
     repo.commit();
     repo.write('a.ts', lines(20).replace('line 5\n', 'line five\n'));
-    m = await makeMargin(repo, opts);
+    m = await makeRede(repo, opts);
     await m.openReview({ kind: 'working' });
   }
 

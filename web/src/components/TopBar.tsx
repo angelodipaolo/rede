@@ -205,7 +205,7 @@ function FinishPanel() {
       <div class="finish-foot">
         {S.agents.length === 0 ? (
           <span class="muted">
-            No agent connected. After you send it, tell your agent: <q>Address the Margin feedback.</q>
+            No agent connected. After you send it, tell your agent: <q>Address the Rede feedback.</q>
           </span>
         ) : (
           <span />
@@ -316,14 +316,14 @@ function ConnectPopover() {
       <p class="small">
         When you finish a review, tell Claude Code or Codex in this repo:
       </p>
-      <CopyBox text="Address the Margin feedback." />
+      <CopyBox text="Address the Rede feedback." />
       <p class="small muted">It reads your feedback, answers or changes the code, replies in each thread, and stops.</p>
       <p class="small">To have it answer each comment while you review:</p>
-      <CopyBox text="Watch Margin and answer my comments live." />
+      <CopyBox text="Watch Rede and answer my comments live." />
       <p class="small muted">
-        These prompts use the Margin skill. Install it once (run it again after you update Margin):
+        These prompts use the Rede skill. Install it once (run it again after you update Rede):
       </p>
-      <CopyBox text="margin setup" />
+      <CopyBox text="rede setup" />
     </div>
   );
 }
@@ -351,7 +351,7 @@ export function TopBar() {
       </button>
       <div class="ident">
         <a class="repo" href="/" title={r?.repo.root}>
-          {r?.repo.name ?? 'Margin'}
+          {r?.repo.name ?? 'Rede'}
         </a>
         {r?.repo.branch && <span class="branch">{r.repo.branch}</span>}
         <span class="title">{r?.title ?? ''}</span>

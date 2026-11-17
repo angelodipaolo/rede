@@ -37,7 +37,7 @@ const BASE_CONFIG = [
 ];
 
 /**
- * Extra environment per repository root. Margin uses it to send the objects that snapshots
+ * Extra environment per repository root. Rede uses it to send the objects that snapshots
  * write to a private object directory (see useObjectStore).
  */
 const repoEnv = new Map<string, Record<string, string>>();
@@ -126,9 +126,29 @@ export async function discoverRepo(cwd: string): Promise<RepoPaths> {
   return { root, gitDir, commonDir: path.resolve(cwd, commonRaw) };
 }
 
-/** Margin's private directory: <git-dir>/margin. For a normal repo this is <git-common-dir>/margin. */
-export function marginDir(repo: RepoPaths): string {
-  return path.join(repo.gitDir, 'margin');
+/** Rede's private directory: <git-dir>/rede. For a normal repo this is <git-common-dir>/rede. */
+export function redeDir(repo: RepoPaths): string {
+  const dir = path.join(repo.gitDir, 'rede');
+  migrateLegacyDir(repo.gitDir, dir);
+  return dir;
+}
+
+/**
+ * The tool was called Margin. Its data lived in <git-dir>/margin/margin.db. Move it to the new
+ * place once, so reviews and threads survive the rename. A failure leaves the old files in place.
+ */
+function migrateLegacyDir(gitDir: string, dir: string): void {
+  const legacy = path.join(gitDir, 'margin');
+  if (fs.existsSync(dir) || !fs.existsSync(legacy)) return;
+  try {
+    fs.renameSync(legacy, dir);
+    for (const suffix of ['', '-shm', '-wal']) {
+      const from = path.join(dir, `margin.db${suffix}`);
+      if (fs.existsSync(from)) fs.renameSync(from, path.join(dir, `rede.db${suffix}`));
+    }
+  } catch {
+    // Start fresh rather than fail; the old directory is still there to recover by hand
+  }
 }
 
 export async function currentBranch(cwd: string): Promise<string | null> {

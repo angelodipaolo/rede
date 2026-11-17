@@ -94,6 +94,21 @@ function lsSet(key: string, v: string | null) {
   }
 }
 
+/** The tool was called Margin. Carry its settings and unsent drafts over to the new key names once. */
+function migrateLegacyStorage() {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!key.startsWith('margin:')) continue;
+      const next = `rede:${key.slice('margin:'.length)}`;
+      if (localStorage.getItem(next) === null) localStorage.setItem(next, localStorage.getItem(key)!);
+      localStorage.removeItem(key);
+    }
+  } catch {
+    /* storage unavailable */
+  }
+}
+migrateLegacyStorage();
+
 export const S = {
   reviewId: '',
   scope: 'all' as ReviewScope,
@@ -108,10 +123,10 @@ export const S = {
   threadsByPath: new Map<string, Thread[]>(),
   agents: [] as AgentPresence[],
   conn: 'connecting' as ConnState,
-  view: (lsGet('margin:view') === 'unified' ? 'unified' : 'split') as ViewMode,
+  view: (lsGet('rede:view') === 'unified' ? 'unified' : 'split') as ViewMode,
   /** Soft-wrap long lines (default) or scroll them sideways. */
-  wrap: lsGet('margin:wrap') !== '0',
-  theme: ((lsGet('margin:theme') as Theme | null) ?? 'system') as Theme,
+  wrap: lsGet('rede:wrap') !== '0',
+  theme: ((lsGet('rede:theme') as Theme | null) ?? 'system') as Theme,
   /** Per scope: path -> explicit collapsed state. */
   collapsed: new Map<ReviewScope, Map<string, boolean>>(),
   since: new Map<string, SinceState>(),
@@ -128,8 +143,8 @@ export const S = {
   connect: false,
   toasts: [] as Toast[],
   openResolved: new Set<number>(),
-  sidebarW: Number(lsGet('margin:sidebar:w')) || 280,
-  sidebarHidden: lsGet('margin:sidebar:hidden') === '1',
+  sidebarW: Number(lsGet('rede:sidebar:w')) || 280,
+  sidebarHidden: lsGet('rede:sidebar:hidden') === '1',
   filter: '',
   scroller: null as HTMLElement | null,
   /** Pending messages in the review in progress (server side; survives reload). */
@@ -164,7 +179,7 @@ export function cycleTheme() {
   const next: Theme = effective === 'dark' ? 'light' : 'dark';
   // Returning to the OS value clears the override.
   S.theme = (next === 'dark') === dark ? 'system' : next;
-  lsSet('margin:theme', S.theme === 'system' ? null : S.theme);
+  lsSet('rede:theme', S.theme === 'system' ? null : S.theme);
   applyTheme();
   emit('ui');
 }
@@ -173,7 +188,7 @@ export function setView(v: ViewMode) {
   if (S.view === v) return;
   preserveScroll(() => {
     S.view = v;
-    lsSet('margin:view', v);
+    lsSet('rede:view', v);
     emit('view', 'ui');
   });
 }
@@ -181,7 +196,7 @@ export function setView(v: ViewMode) {
 export function toggleWrap() {
   preserveScroll(() => {
     S.wrap = !S.wrap;
-    lsSet('margin:wrap', S.wrap ? null : '0');
+    lsSet('rede:wrap', S.wrap ? null : '0');
     emit('view', 'ui');
   });
 }
@@ -189,11 +204,11 @@ export function toggleWrap() {
 export function setSidebar(w: number | null, hidden?: boolean) {
   if (w !== null) {
     S.sidebarW = Math.max(180, Math.min(600, Math.round(w)));
-    lsSet('margin:sidebar:w', String(S.sidebarW));
+    lsSet('rede:sidebar:w', String(S.sidebarW));
   }
   if (hidden !== undefined) {
     S.sidebarHidden = hidden;
-    lsSet('margin:sidebar:hidden', hidden ? '1' : null);
+    lsSet('rede:sidebar:hidden', hidden ? '1' : null);
   }
   emit('layout');
 }
@@ -723,7 +738,7 @@ export async function submitReview(mode: 'discuss' | 'implement', body: string):
   setFinishOpen(false);
   setPendingCount(0);
   emit('batches', 'threads');
-  const none = S.agents.length === 0 ? ' Waiting for an agent · tell your agent: “Address the Margin feedback.”' : '';
+  const none = S.agents.length === 0 ? ' Waiting for an agent · tell your agent: “Address the Rede feedback.”' : '';
   pushToast({ kind: 'info', text: `Review sent (${MODE_LABEL[mode]}, ${n} comment${n === 1 ? '' : 's'}).${none}` });
   return true;
 }
@@ -748,18 +763,18 @@ export async function discardReview(): Promise<void> {
 
 /** The overall note of the review in progress: a local draft until the review is submitted. */
 export function reviewNote(): string {
-  return lsGet(`margin:reviewnote:${S.reviewId}`) ?? '';
+  return lsGet(`rede:reviewnote:${S.reviewId}`) ?? '';
 }
 export function setReviewNote(v: string) {
-  lsSet(`margin:reviewnote:${S.reviewId}`, v.trim() ? v : null);
+  lsSet(`rede:reviewnote:${S.reviewId}`, v.trim() ? v : null);
 }
 
 /** The "Comment vs Review" hint under composers shows for the first few sends. */
 export function sendHintVisible(): boolean {
-  return Number(lsGet('margin:sendhint') ?? 0) < 5;
+  return Number(lsGet('rede:sendhint') ?? 0) < 5;
 }
 function countSend() {
-  lsSet('margin:sendhint', String(Number(lsGet('margin:sendhint') ?? 0) + 1));
+  lsSet('rede:sendhint', String(Number(lsGet('rede:sendhint') ?? 0) + 1));
 }
 
 // ------------------------------------------------------------------ threads
@@ -821,7 +836,7 @@ function removeThread(id: number) {
 }
 
 function saveUnread() {
-  lsSet(`margin:unread:${S.reviewId}`, JSON.stringify([...S.unread]));
+  lsSet(`rede:unread:${S.reviewId}`, JSON.stringify([...S.unread]));
 }
 
 export function markRead(id: number) {
@@ -929,7 +944,7 @@ let draftTimer: ReturnType<typeof setTimeout> | null = null;
 function saveDrafts() {
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
-    lsSet(`margin:composers:${S.reviewId}`, JSON.stringify([...S.composers.values()]));
+    lsSet(`rede:composers:${S.reviewId}`, JSON.stringify([...S.composers.values()]));
   }, 250);
 }
 
@@ -938,7 +953,7 @@ function saveDrafts() {
  * does not drop drafts it never saw, and drop drafts the other tab posted or discarded.
  */
 function onDraftsStorage(e: StorageEvent) {
-  if (e.key !== `margin:composers:${S.reviewId}`) return;
+  if (e.key !== `rede:composers:${S.reviewId}`) return;
   const parse = (v: string | null): ComposerState[] => {
     try {
       return v ? (JSON.parse(v) as ComposerState[]).filter((c) => c && c.key) : [];
@@ -972,14 +987,14 @@ function onDraftsStorage(e: StorageEvent) {
 
 export function restoreDrafts() {
   window.addEventListener('storage', onDraftsStorage);
-  const raw = lsGet(`margin:composers:${S.reviewId}`);
+  const raw = lsGet(`rede:composers:${S.reviewId}`);
   if (!raw) return;
   try {
     for (const c of JSON.parse(raw) as ComposerState[]) if (c && c.key) S.composers.set(c.key, c);
   } catch {
     /* ignore */
   }
-  const u = lsGet(`margin:unread:${S.reviewId}`);
+  const u = lsGet(`rede:unread:${S.reviewId}`);
   if (u) {
     try {
       for (const id of JSON.parse(u) as number[]) S.unread.add(id);

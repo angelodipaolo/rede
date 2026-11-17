@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../../src/server/server.ts';
 
-const dir = process.argv[2] ?? fs.mkdtempSync(path.join(os.tmpdir(), 'margin-scale-'));
+const dir = process.argv[2] ?? fs.mkdtempSync(path.join(os.tmpdir(), 'rede-scale-'));
 const FILES = 10_000;
 const CHANGED = 1_500;
 const sh = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', maxBuffer: 1 << 30 });
@@ -99,7 +99,7 @@ sse.destroy();
 const ticks: number[] = [];
 for (let i = 0; i < 10; i++) {
   const t = performance.now();
-  await srv.margin.compute('working');
+  await srv.rede.compute('working');
   ticks.push(performance.now() - t);
 }
 console.log(`poll tick, nothing changed: ${median(ticks).toFixed(0)} ms (median of 10)`);
@@ -108,13 +108,13 @@ await Promise.all(Array.from({ length: 20 }, () => call('GET', '/api/reviews/wor
 console.log(`20 concurrent GET review:   ${(performance.now() - conc).toFixed(0)} ms total`);
 console.log(`server RSS:                 ${(process.memoryUsage().rss / 1e6).toFixed(0)} MB (in-process; includes the benchmark)`);
 const objs = sh('count-objects', '-v');
-console.log(`repo loose objects after:   ${/^count: (\d+)/m.exec(objs)![1]} (snapshot objects go to .git/margin/objects)`);
+console.log(`repo loose objects after:   ${/^count: (\d+)/m.exec(objs)![1]} (snapshot objects go to .git/rede/objects)`);
 await srv.close();
 // A server restart keeps the private index (stat cache) and objects: the next "cold" GET is cheap.
 const srv2 = await startServer({ cwd: dir, webDir: null, idleMs: 0, writeInfo: false });
 {
   const t = performance.now();
-  await srv2.margin.getReview('working');
+  await srv2.rede.getReview('working');
   console.log(`GET review after restart:   ${(performance.now() - t).toFixed(0)} ms`);
 }
 await srv2.close();

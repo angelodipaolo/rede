@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Margin } from '../src/server/service.ts';
-import { human, lines, makeMargin, TempRepo } from './helpers.ts';
+import type { Rede } from '../src/server/service.ts';
+import { human, lines, makeRede, TempRepo } from './helpers.ts';
 
 let repo: TempRepo;
-let m: Margin;
+let m: Rede;
 afterEach(() => {
   m?.close();
   repo?.cleanup();
@@ -17,7 +17,7 @@ describe('viewed state', () => {
     repo.commit();
     repo.write('a.ts', lines(40).replace('line 3\n', 'line three\n'));
     repo.write('b.ts', 'B\n');
-    m = await makeMargin(repo);
+    m = await makeRede(repo);
     await m.openReview({ kind: 'working' });
   }
   const file = async (p: string, scope: 'all' | 'staged' | 'unstaged' = 'all') =>
@@ -78,7 +78,7 @@ describe('staged and unstaged scopes', () => {
     repo.write('a.ts', lines(20));
     repo.write('b.ts', lines(10, 'b'));
     repo.commit();
-    m = await makeMargin(repo);
+    m = await makeRede(repo);
     await m.openReview({ kind: 'working' });
   }
 

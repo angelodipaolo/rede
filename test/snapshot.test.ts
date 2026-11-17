@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { diffTrees } from '../src/server/diff.ts';
 import { IndexTreeReader, WorkingSnapshotter } from '../src/server/snapshot.ts';
-import { lines, makeMargin, TempRepo } from './helpers.ts';
+import { lines, makeRede, TempRepo } from './helpers.ts';
 
 describe('working tree snapshot', () => {
   let repo: TempRepo;
@@ -17,7 +17,7 @@ describe('working tree snapshot', () => {
     repo.write('ren.txt', 'a\nb\nc\nd\ne\n');
     repo.write('staged.txt', 'v1\n');
     const head = repo.commit();
-    const dir = path.join(repo.dir, '.git', 'margin');
+    const dir = path.join(repo.dir, '.git', 'rede');
     return { head, snap: new WorkingSnapshotter(repo.dir, path.join(repo.dir, '.git'), dir), idx: new IndexTreeReader(repo.dir, path.join(repo.dir, '.git'), dir) };
   }
 
@@ -71,7 +71,7 @@ describe('working tree snapshot', () => {
     repo = new TempRepo();
     repo.write('a.ts', lines(50));
     repo.commit();
-    const m = await makeMargin(repo);
+    const m = await makeRede(repo);
     try {
       await m.openReview({ kind: 'working' });
       const loose = () => Number(/^count: (\d+)/m.exec(repo.git('count-objects', '-v'))![1]);
@@ -110,7 +110,7 @@ describe('working tree snapshot', () => {
     repo.commit();
     repo.write('a.ts', lines(10) + 'staged then unstaged\n');
     repo.git('add', 'a.ts'); // the blob exists only in the repository's store, reachable from the index
-    const m = await makeMargin(repo);
+    const m = await makeRede(repo);
     try {
       await m.openReview({ kind: 'working' });
       await m.getReview('working');

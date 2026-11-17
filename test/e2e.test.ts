@@ -72,11 +72,11 @@ describe('HTTP end to end', () => {
   it('serves health, rejects foreign hosts and origins, serves the not-built page', async () => {
     const port = await setup();
     const h = await req(port, 'GET', '/api/health');
-    expect(h.json).toMatchObject({ ok: true, name: 'margin', pid: process.pid });
+    expect(h.json).toMatchObject({ ok: true, name: 'rede', pid: process.pid });
     expect((await req(port, 'GET', '/api/health', undefined, { host: 'evil.example:80' })).status).toBe(403);
     expect((await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } }, { origin: 'http://evil.example' })).status).toBe(403);
     expect((await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } }, { origin: `http://127.0.0.1:${port}` })).status).toBe(200);
-    const info = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'margin', 'server.json'), 'utf8'));
+    const info = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'rede', 'server.json'), 'utf8'));
     expect(info).toMatchObject({ pid: process.pid, port });
     const page = await new Promise<string>((resolve) => http.get({ host: '127.0.0.1', port, path: '/r/working' }, (res) => {
       let t = '';
@@ -166,7 +166,7 @@ describe('HTTP end to end', () => {
     await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } });
     const streams = Array.from({ length: 20 }, () => sse(port, '/api/reviews/working/events'));
     await Promise.all(streams.map((s) => s.waitFor((e) => e.type === 'agents')));
-    expect(srv!.margin.subscriberCount).toBe(20);
+    expect(srv!.rede.subscriberCount).toBe(20);
     const waits = Array.from({ length: 5 }, (_, i) => {
       const r = http.get({ host: '127.0.0.1', port, path: `/api/agent/wait?agent=a${i}&timeout=600` });
       r.on('error', () => {});
@@ -176,10 +176,10 @@ describe('HTTP end to end', () => {
       for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 20));
       return f();
     };
-    expect(await until(() => srv!.margin.waiterCount === 5)).toBe(true);
+    expect(await until(() => srv!.rede.waiterCount === 5)).toBe(true);
     for (const s of streams) s.close();
     for (const w of waits) w.destroy();
-    expect(await until(() => srv!.margin.subscriberCount === 0 && srv!.margin.waiterCount === 0)).toBe(true);
+    expect(await until(() => srv!.rede.subscriberCount === 0 && srv!.rede.waiterCount === 0)).toBe(true);
   });
 
   it('persists threads across a restart', async () => {
@@ -203,7 +203,7 @@ describe('HTTP end to end', () => {
     await setup({ idleMs: 300, onExit: () => (exited = true) });
     await new Promise((r) => setTimeout(r, 900));
     expect(exited).toBe(true);
-    expect(fs.existsSync(path.join(repo.dir, '.git', 'margin', 'server.json'))).toBe(false);
+    expect(fs.existsSync(path.join(repo.dir, '.git', 'rede', 'server.json'))).toBe(false);
     srv = null;
   });
 
@@ -228,7 +228,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
 
   const run = (args: string[], input?: string, env: Record<string, string> = {}) =>
     new Promise<{ code: number; out: string; err: string }>((resolve) => {
-      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...process.env, CLAUDECODE: '', MARGIN_AGENT: '', ...env } }, (e, out, err) =>
+      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...process.env, CLAUDECODE: '', REDE_AGENT: '', ...env } }, (e, out, err) =>
         resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out, err }),
       );
       child.stdin?.end(input ?? '');
@@ -239,7 +239,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     repo.write('a.txt', 'x\n');
     repo.commit();
     await run(['list']);
-    const file = path.join(repo.dir, '.git', 'margin', 'server.json');
+    const file = path.join(repo.dir, '.git', 'rede', 'server.json');
     const first = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(first.build).toBeGreaterThan(0);
     const waiting = run(['wait', '--timeout', '20']);
@@ -251,10 +251,10 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     expect(second.port).toBe(first.port);
     const w = await waiting;
     expect(w.code).toBe(0);
-    expect(w.out).toContain('margin wait');
+    expect(w.out).toContain('rede wait');
   }, 30_000);
 
-  const infoFile = () => path.join(repo.dir, '.git', 'margin', 'server.json');
+  const infoFile = () => path.join(repo.dir, '.git', 'rede', 'server.json');
   const readInfo = () => JSON.parse(fs.readFileSync(infoFile(), 'utf8'));
 
   it('never replaces a server started by a newer build', async () => {
@@ -302,7 +302,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     }
     expect(Date.now() - t0).toBeLessThan(4000);
     expect(r.code).toBe(1);
-    expect(r.err).toContain('no Margin server runs for this repo, and this command may not start one');
+    expect(r.err).toContain('no Rede server runs for this repo, and this command may not start one');
     expect(r.err).toContain('(EACCES)');
     expect(r.err).not.toContain('start.lock');
   }, 30_000);
@@ -312,8 +312,8 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     repo.write('a.txt', 'x\n');
     repo.commit();
     const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
-    fs.mkdirSync(path.join(repo.dir, '.git', 'margin'), { recursive: true });
-    fs.writeFileSync(path.join(repo.dir, '.git', 'margin', 'start.lock'), String(dead));
+    fs.mkdirSync(path.join(repo.dir, '.git', 'rede'), { recursive: true });
+    fs.writeFileSync(path.join(repo.dir, '.git', 'rede', 'start.lock'), String(dead));
     const t0 = Date.now();
     const r = await run(['threads']);
     expect(r.code).toBe(0);
@@ -338,16 +338,16 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     const show = await run(['show', '1']);
     expect(show.out).toContain('const a = `x`;');
     const inCodex = await run(['show', '1'], undefined, { CODEX_THREAD_ID: 't1', CODEX_SANDBOX: 'seatbelt' });
-    expect(inCodex.out).toContain("margin reply 1 --as codex -m '");
-    expect(inCodex.out).not.toContain('MARGIN_EOF');
+    expect(inCodex.out).toContain("rede reply 1 --as codex -m '");
+    expect(inCodex.out).not.toContain('REDE_EOF');
     expect(show.out).toContain('$HOME stays literal');
 
     // A human question, then wait.
-    const port = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'margin', 'server.json'), 'utf8')).port;
+    const port = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'rede', 'server.json'), 'utf8')).port;
     await req(port, 'POST', '/api/threads/1/messages', { body: 'Is this right?', author: { kind: 'human', name: 'you' } });
     const w = await run(['wait', '--timeout', '5'], undefined, { CLAUDECODE: '1' });
     expect(w.out).toContain('Thread #1');
-    expect(w.out).toContain('margin reply 1 --as claude');
+    expect(w.out).toContain('rede reply 1 --as claude');
     const r = await run(['reply', '1'], 'Yes, it is.\n', { CLAUDECODE: '1' });
     expect(r.out).toContain('Replied to thread #1 as claude');
     const t = await run(['wait', '--timeout', '1']);

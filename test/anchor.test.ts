@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { capture, reanchor } from '../src/server/anchor.ts';
-import type { Margin } from '../src/server/service.ts';
-import { human, lines, makeMargin, TempRepo } from './helpers.ts';
+import type { Rede } from '../src/server/service.ts';
+import { human, lines, makeRede, TempRepo } from './helpers.ts';
 
 describe('reanchor (pure)', () => {
   const file = ['a', 'b', 'target()', 'c', 'd', 'e', 'target()', 'f'];
@@ -50,7 +50,7 @@ describe('reanchor (pure)', () => {
 
 describe('thread re-anchoring in a review', () => {
   let repo: TempRepo;
-  let m: Margin;
+  let m: Rede;
   afterEach(() => {
     m?.close();
     repo?.cleanup();
@@ -61,7 +61,7 @@ describe('thread re-anchoring in a review', () => {
     repo.write('src/app.ts', lines(30));
     repo.commit();
     repo.write('src/app.ts', lines(30).replace('line 10\n', 'line 10 changed\n'));
-    m = await makeMargin(repo);
+    m = await makeRede(repo);
     await m.openReview({ kind: 'working' });
     const t = await m.createThread('working', 'all', {
       anchor: { path: 'src/app.ts', side: 'new', startLine: 10, endLine: 11 },

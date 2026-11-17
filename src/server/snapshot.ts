@@ -56,7 +56,7 @@ function serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * Builds a git tree that represents the working tree: tracked files with their
  * working-tree content, plus untracked files that are not ignored.
  *
- * It uses a private index file (GIT_INDEX_FILE) that lives in Margin's directory and
+ * It uses a private index file (GIT_INDEX_FILE) that lives in Rede's directory and
  * is reused between runs, so git's stat cache makes repeated snapshots cheap. The real
  * index and the working tree are never written.
  */
@@ -146,7 +146,7 @@ export class WorkingSnapshotter {
   }
 
   /**
-   * git add never removes a file from an index once it is there. A file that Margin picked up
+   * git add never removes a file from an index once it is there. A file that Rede picked up
    * as untracked and that the user ignores later (build output added to .gitignore) would stay
    * in the review forever. Removes such files: ignored, in the private index, not in the real one.
    */

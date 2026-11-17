@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
 import { VERSION } from './errors.ts';
-import { discoverRepo, marginDir, type RepoPaths } from './git.ts';
+import { discoverRepo, redeDir, type RepoPaths } from './git.ts';
 import { createHttpServer } from './http.ts';
-import { Margin } from './service.ts';
+import { Rede } from './service.ts';
 import { Store } from './store.ts';
 
 export interface ServerInfo {
@@ -26,7 +26,7 @@ export function buildId(cliPath: string): number | undefined {
 }
 
 export function serverInfoPath(repo: RepoPaths): string {
-  return path.join(marginDir(repo), 'server.json');
+  return path.join(redeDir(repo), 'server.json');
 }
 
 export function readServerInfo(repo: RepoPaths): ServerInfo | null {
@@ -58,7 +58,7 @@ export interface StartOptions {
 }
 
 export interface RunningServer {
-  margin: Margin;
+  rede: Rede;
   server: http.Server;
   port: number;
   repo: RepoPaths;
@@ -67,10 +67,10 @@ export interface RunningServer {
 
 export async function startServer(opts: StartOptions): Promise<RunningServer> {
   const repo = await discoverRepo(opts.cwd);
-  const dir = marginDir(repo);
+  const dir = redeDir(repo);
   fs.mkdirSync(dir, { recursive: true });
-  const store = await Store.open(path.join(dir, 'margin.db'));
-  const margin = new Margin({
+  const store = await Store.open(path.join(dir, 'rede.db'));
+  const rede = new Rede({
     repo,
     store,
     version: VERSION,
@@ -81,7 +81,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
 
   let lastActivity = Date.now();
   let closing: Promise<void> | null = null;
-  const server = createHttpServer(margin, {
+  const server = createHttpServer(rede, {
     webDir: opts.webDir,
     allowOrigins: opts.allowOrigins,
     onActivity: () => (lastActivity = Date.now()),
@@ -98,7 +98,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     });
   // Reuse the last port of this repo when it is free. An open browser tab then reconnects
   // by itself after a restart, and a bookmarked review URL keeps working.
-  const lastPortFile = path.join(marginDir(repo), 'last-port');
+  const lastPortFile = path.join(redeDir(repo), 'last-port');
   let preferred = opts.preferredPort;
   if (!preferred && opts.writeInfo !== false) {
     try {
@@ -130,7 +130,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   const idleMs = opts.idleMs ?? 30 * 60_000;
   if (idleMs > 0) {
     idleTimer = setInterval(() => {
-      if (margin.subscriberCount > 0 || margin.waiterCount > 0) {
+      if (rede.subscriberCount > 0 || rede.waiterCount > 0) {
         lastActivity = Date.now();
         return;
       }
@@ -143,7 +143,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     if (closing) return closing;
     closing = (async () => {
       if (idleTimer) clearInterval(idleTimer);
-      margin.close();
+      rede.close();
       if (opts.writeInfo !== false) {
         const cur = (() => {
           try {
@@ -160,7 +160,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
           }
         }
       }
-      // margin.close() answered waiting agents ("timed out"); let those responses go out first.
+      // rede.close() answered waiting agents ("timed out"); let those responses go out first.
       await new Promise((r) => setTimeout(r, 100));
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
@@ -169,27 +169,27 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     return closing;
   }
 
-  return { margin, server, port, repo, close };
+  return { rede, server, port, repo, close };
 }
 
-/** Entry point of the detached server process (`margin __serve`). */
+/** Entry point of the detached server process (`rede __serve`). */
 export async function runServerProcess(cwd: string, webDir: string | null): Promise<void> {
   const envNum = (k: string) => (process.env[k] ? Number(process.env[k]) : undefined);
-  const idleSec = envNum('MARGIN_IDLE_TIMEOUT');
+  const idleSec = envNum('REDE_IDLE_TIMEOUT');
   const running = await startServer({
     cwd,
     webDir,
-    port: envNum('MARGIN_PORT'),
-    preferredPort: envNum('MARGIN_PREFERRED_PORT'),
+    port: envNum('REDE_PORT'),
+    preferredPort: envNum('REDE_PREFERRED_PORT'),
     build: process.argv[1] ? buildId(process.argv[1]) : undefined,
     idleMs: idleSec === undefined ? undefined : idleSec * 1000,
-    claimTimeoutMs: envNum('MARGIN_CLAIM_TIMEOUT') === undefined ? undefined : envNum('MARGIN_CLAIM_TIMEOUT')! * 1000,
-    allowOrigins: (process.env.MARGIN_ALLOW_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    claimTimeoutMs: envNum('REDE_CLAIM_TIMEOUT') === undefined ? undefined : envNum('REDE_CLAIM_TIMEOUT')! * 1000,
+    allowOrigins: (process.env.REDE_ALLOW_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     onExit: () => process.exit(0),
   });
   const stop = () => void running.close().then(() => process.exit(0));
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   process.on('SIGHUP', stop);
-  console.log(`[${new Date().toISOString()}] margin ${VERSION} serving ${running.repo.root} on http://127.0.0.1:${running.port} (pid ${process.pid})`);
+  console.log(`[${new Date().toISOString()}] rede ${VERSION} serving ${running.repo.root} on http://127.0.0.1:${running.port} (pid ${process.pid})`);
 }

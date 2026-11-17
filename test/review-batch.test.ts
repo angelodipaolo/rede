@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ServerEvent } from '../src/shared/types.ts';
-import { discoverRepo, marginDir } from '../src/server/git.ts';
+import { discoverRepo, redeDir } from '../src/server/git.ts';
 import { loadSqlite, Store } from '../src/server/store.ts';
-import type { Margin } from '../src/server/service.ts';
-import { agent, human, lines, makeMargin, TempRepo } from './helpers.ts';
+import type { Rede } from '../src/server/service.ts';
+import { agent, human, lines, makeRede, TempRepo } from './helpers.ts';
 
 describe('one-off comments and batched reviews', () => {
   let repo: TempRepo;
-  let m: Margin;
+  let m: Rede;
   afterEach(() => {
     m?.close();
     repo?.cleanup();
@@ -20,7 +20,7 @@ describe('one-off comments and batched reviews', () => {
     repo.write('a.ts', lines(30));
     repo.commit();
     repo.write('a.ts', lines(30).replace('line 5\n', 'line five\n'));
-    m = await makeMargin(repo, opts);
+    m = await makeRede(repo, opts);
     await m.openReview({ kind: 'working' });
   }
 
@@ -246,7 +246,7 @@ describe('one-off comments and batched reviews', () => {
     const b = m.submitReview('working', { mode: 'implement', body: 'note' });
     await queue(9, 'still pending');
     m.close();
-    m = await makeMargin(repo);
+    m = await makeRede(repo);
     const r = await m.getReview('working');
     expect(r.batches).toEqual([b]);
     expect(r.pendingCount).toBe(1);
@@ -263,7 +263,7 @@ describe('database migration', () => {
     repo.commit();
     repo.write('a.ts', lines(10).replace('line 2\n', 'line two\n'));
     const paths = await discoverRepo(repo.dir);
-    const file = path.join(marginDir(paths), 'margin.db');
+    const file = path.join(redeDir(paths), 'rede.db');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const { DatabaseSync } = await loadSqlite();
     const old = new DatabaseSync(file);
@@ -304,7 +304,7 @@ describe('database migration', () => {
     expect(again.messagesOf(1)).toHaveLength(3);
     again.close();
 
-    const m = await makeMargin(repo);
+    const m = await makeRede(repo);
     try {
       const r = await m.getReview('working');
       expect(r.pendingCount).toBe(0);

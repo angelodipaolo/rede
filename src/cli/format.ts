@@ -108,13 +108,13 @@ export function formatAgentThread(at: AgentThread, agentName: string, opts: { re
   out.push('--- end of conversation ---');
   if (opts.replyHint && !t.resolved && opts.argStyle) {
     out.push('');
-    out.push(`Reply: margin reply ${t.id} --as ${agentName} -m '<your answer in markdown>'`);
+    out.push(`Reply: rede reply ${t.id} --as ${agentName} -m '<your answer in markdown>'`);
     out.push("(one plain command, no heredoc or pipe; the text must not contain ' : write ’ instead)");
   } else if (opts.replyHint && !t.resolved) {
     out.push('');
-    out.push(`Reply: margin reply ${t.id} --as ${agentName} <<'MARGIN_EOF'`);
+    out.push(`Reply: rede reply ${t.id} --as ${agentName} <<'REDE_EOF'`);
     out.push('<your answer in markdown>');
-    out.push('MARGIN_EOF');
+    out.push('REDE_EOF');
   }
   return out.join('\n');
 }
@@ -152,14 +152,14 @@ export function fileToUnified(f: DiffFile): string {
   return out.join('\n');
 }
 
-/** The header of `margin diff`, plus the file list with --stat. The patch itself is streamed after it. */
+/** The header of `rede diff`, plus the file list with --stat. The patch itself is streamed after it. */
 export function formatDiff(r: Review, stat: boolean): string {
   const out: string[] = [];
   out.push(`# Review ${r.id}: ${r.title}`);
   out.push(`Compares: ${specText(r.spec)}${r.scopes.length > 1 ? ` · scope: ${r.scope}` : ''}`);
   out.push(`From ${r.resolved.from.slice(0, 12)} to ${r.resolved.to ? r.resolved.to.slice(0, 12) : 'the working tree'} · ${r.files.length} files`);
   const open = r.threads.filter((t) => !t.resolved).length;
-  if (r.threads.length) out.push(`Threads: ${r.threads.length} (${open} open). List them with \`margin threads\`.`);
+  if (r.threads.length) out.push(`Threads: ${r.threads.length} (${open} open). List them with \`rede threads\`.`);
   out.push('');
   if (stat) {
     let add = 0;
@@ -181,8 +181,8 @@ export function formatWait(r: WaitResponse, agentName: string, argStyle: boolean
   const n = r.threads.length;
   const then =
     next === 'inbox'
-      ? 'Handle and answer each one with `margin reply <id>`. Then run `margin inbox` once more; when it prints "No feedback is waiting.", stop and summarize for the user.'
-      : 'Answer each one with `margin reply <id>`, then run `margin wait` again.';
+      ? 'Handle and answer each one with `rede reply <id>`. Then run `rede inbox` once more; when it prints "No feedback is waiting.", stop and summarize for the user.'
+      : 'Answer each one with `rede reply <id>`, then run `rede wait` again.';
   const parts = [`# ${n} thread${n > 1 ? 's' : ''} for you (${agentName})\n${then}`];
   const block = (at: AgentThread) => formatAgentThread(at, agentName, { replyHint: true, argStyle });
   const batches = new Map(r.batches.map((b) => [b.id, b]));
