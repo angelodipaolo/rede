@@ -83,6 +83,10 @@ export interface Review extends ReviewSummary {
   /** Metadata only. Load hunks with POST /api/reviews/:id/hunks. */
   files: DiffFileMeta[];
   threads: Thread[];
+  /** Submitted batches of this review, oldest first. */
+  batches: ReviewBatch[];
+  /** Number of pending messages in the review in progress. */
+  pendingCount: number;
   agents: AgentPresence[];
 }
 
@@ -211,7 +215,13 @@ export interface Thread {
   resolved: boolean;
   /** A private note. Agents never receive it through `wait`. */
   noteOnly: boolean;
+  /**
+   * Computed from submitted messages only. A thread that has only pending messages is 'idle'
+   * and is hidden from every agent endpoint.
+   */
   agentState: AgentState;
+  /** How the agent must treat the latest human message: its batch's mode, or 'ask' for a one-off. */
+  mode: ReviewMode;
   /** Name of the agent that holds the thread while agentState is 'working'. */
   claimedBy: string | null;
   messages: Message[];
@@ -219,7 +229,40 @@ export interface Thread {
   updatedAt: string;
 }
 
+/**
+ * Two ways for the human to talk to an agent.
+ *
+ * 1. One-off: a comment or reply that is sent at once (pending = false). The agent
+ *    answers it as soon as it can. Its mode is 'ask': answer the question; change code
+ *    only when the comment itself asks for a change.
+ *
+ * 2. Review: the human queues comments and replies as pending (pending = true). Agents
+ *    never see pending messages. When the human submits the review, all pending messages
+ *    of that review are released together as one ReviewBatch with a mode:
+ *      'discuss'   : answer and discuss only. The agent must not change any code.
+ *      'implement' : the agent changes the code to address each comment, then replies in
+ *                    each thread with what it changed.
+ *    A review has at most one set of pending messages (the review in progress).
+ */
+export type ReviewMode = 'ask' | 'discuss' | 'implement';
+
+export interface ReviewBatch {
+  /** Small integer, unique in the repo. */
+  id: number;
+  reviewId: string;
+  mode: 'discuss' | 'implement';
+  /** Optional overall note from the human to the agent. Markdown. May be empty. */
+  body: string;
+  submittedAt: string;
+  /** Threads that received a message from this batch. */
+  threadIds: number[];
+}
+
 export interface Message {
+  /** True while the message waits in the review in progress. Only human messages can be pending. */
+  pending: boolean;
+  /** The batch that released this message. Null for one-off messages and pending ones. */
+  batchId: number | null;
   id: number;
   author: Author;
   /** Markdown. */
@@ -253,6 +296,8 @@ export interface AgentPresence {
  * POST /api/threads/:tid/messages  AddMessageRequest -> Thread
  * PATCH /api/messages/:mid      EditMessageRequest -> Thread
  * DELETE /api/messages/:mid                -> Thread   (deletes the thread too when it was the last message; then returns { ok: true, threadDeleted: true })
+ * POST /api/reviews/:id/submit  SubmitReviewRequest -> ReviewBatch   (releases all pending messages; 400 when none)
+ * DELETE /api/reviews/:id/pending          -> { ok: true }   (discards the review in progress: all pending messages, and threads left empty)
  * GET  /api/reviews/:id/events             -> text/event-stream of ServerEvent (one JSON per `data:` line)
  */
 
@@ -298,10 +343,18 @@ export interface SetViewedRequest {
   viewed: boolean;
 }
 
+export interface SubmitReviewRequest {
+  mode: 'discuss' | 'implement';
+  /** Optional overall note. */
+  body?: string;
+}
+
 export interface CreateThreadRequest {
   anchor: Anchor;
   body: string;
   author: Author;
+  /** Queue in the review in progress instead of sending now. Human authors only. */
+  pending?: boolean;
   noteOnly?: boolean;
 }
 
@@ -313,6 +366,8 @@ export interface UpdateThreadRequest {
 export interface AddMessageRequest {
   body: string;
   author: Author;
+  /** Queue in the review in progress instead of sending now. Human authors only. */
+  pending?: boolean;
   /** Convenience: resolve the thread with this message. */
   resolve?: boolean;
 }
@@ -332,6 +387,8 @@ export interface ApiError {
 export type ServerEvent =
   | { type: 'thread'; thread: Thread } // created or changed in any way
   | { type: 'thread-deleted'; threadId: number }
+  | { type: 'batch'; batch: ReviewBatch; pendingCount: number } // a review was submitted
+  | { type: 'pending'; pendingCount: number } // the review in progress changed size
   | { type: 'viewed'; path: string; viewed: boolean }
   | { type: 'diff-changed'; diffFingerprint: string } // the UI refetches the review
   | { type: 'agents'; agents: AgentPresence[] };
@@ -355,6 +412,11 @@ export type ServerEvent =
 export interface WaitResponse {
   /** Empty when the wait timed out. The agent calls `wait` again. */
   threads: AgentThread[];
+  /**
+   * Batches that the returned threads belong to. All threads of one batch are delivered
+   * together in one response, to one agent.
+   */
+  batches: ReviewBatch[];
   timedOut: boolean;
 }
 
