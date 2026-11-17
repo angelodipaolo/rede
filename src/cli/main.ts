@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import type {
   AgentPresence,
   AgentThread,
+  HistoryEntry,
+  HistoryPage,
   Review,
   ReviewScope,
   ReviewSpec,
@@ -17,6 +19,7 @@ import { currentBranch, defaultBranch, discoverRepo, git, type RepoPaths } from 
 import { ApiFailure, detectAgentName, ensureServer, findServer, inCodex, request, stopServer, streamTo } from './client.ts';
 import { formatAgentThread, formatDiff, formatThreadLine, formatWait, location } from './format.ts';
 import { GUIDE, setup } from './guide.ts';
+import { historyMarkdown } from '../shared/history-md.ts';
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 const WEB_DIR = path.join(path.dirname(CLI_PATH), 'web');
@@ -36,13 +39,18 @@ Server:
   margin status | list | stop
 
 Agents (default output is markdown for an LLM; --json for raw JSON):
-  margin wait [--timeout <sec>]          block until a comment needs an answer
+  margin inbox                           print the feedback waiting for you now; never blocks
+  margin wait [--timeout <sec>]          block until a comment needs an answer (watch mode)
   margin reply <id> [-m <text>] [--resolve]   (reads stdin when -m is absent)
   margin comment <path>[:<line>[-<end>]] [--old] [--staged|--unstaged] [-m <text>]
   margin threads [--all|--pending]
   margin show <id> | resolve <id> | release
   margin diff [--stat] [--staged|--unstaged]
   margin guide            print the agent instructions
+
+History:
+  margin export [--review <id>] [--since <date>] [-o <file>]
+                          write past reviews and threads as Markdown (stdout without -o)
   margin setup            install the guide as a Claude Code and Codex skill, and a Codex
                           rule that runs margin agent commands outside the Codex sandbox
 Common: --as <agent name>, --review <review id>
@@ -55,7 +63,7 @@ interface Args {
   flags: Map<string, string | true>;
 }
 
-const VALUE_FLAGS = new Set(['--as', '--review', '--timeout', '-m', '--message', '-c', '--commit']);
+const VALUE_FLAGS = new Set(['--as', '--review', '--timeout', '-m', '--message', '-c', '--commit', '--since', '-o', '--output']);
 
 function parseArgs(argv: string[]): Args {
   const pos: string[] = [];
@@ -242,6 +250,40 @@ async function cmdWait(args: Args): Promise<void> {
   out(formatWait(r, name, argStyle(name)));
 }
 
+/** `margin inbox`: the same delivery and claiming as `wait`, without blocking (timeout 0). */
+async function cmdInbox(args: Args): Promise<void> {
+  const name = agentName(args);
+  const c = await connect();
+  const review = str(args, '--review');
+  const r = await api<WaitResponse>(c, 'GET', `/api/agent/wait?agent=${enc(name)}&timeout=0${review ? `&review=${enc(review)}` : ''}`);
+  if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
+  if (!r.threads.length) return out('No feedback is waiting.');
+  out(formatWait(r, name, argStyle(name), 'inbox'));
+}
+
+async function cmdExport(args: Args): Promise<void> {
+  const c = await connect();
+  const review = str(args, '--review');
+  const since = str(args, '--since');
+  const entries: HistoryEntry[] = [];
+  let before: string | null = null;
+  do {
+    const q = new URLSearchParams({ limit: '500' });
+    if (review) q.set('review', review);
+    if (since) q.set('since', since);
+    if (before) q.set('before', before);
+    const page: HistoryPage = await api<HistoryPage>(c, 'GET', `/api/history?${q}`);
+    entries.push(...page.entries);
+    before = page.next;
+  } while (before);
+  const filter = [review ? `review ${review}` : null, since ? `since ${since}` : null].filter(Boolean).join(', ');
+  const text = historyMarkdown(entries, { repo: path.basename(c.repo.root), exportedAt: new Date().toISOString(), filter: filter || undefined });
+  const file = str(args, '-o', '--output');
+  if (!file) return out(text);
+  fs.writeFileSync(path.resolve(process.cwd(), file), text);
+  out(`Wrote ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} to ${file}.`);
+}
+
 function threadId(s: string | undefined): number {
   const n = Number(String(s ?? '').replace(/^#/, ''));
   if (!Number.isInteger(n) || n <= 0) throw new UserError(`Expected a thread id, got "${s ?? ''}".`);
@@ -255,7 +297,7 @@ async function cmdReply(args: Args): Promise<void> {
   const c = await connect();
   const t = await api<Thread>(c, 'POST', `/api/threads/${id}/messages`, { body, author: { kind: 'agent', name }, resolve: has(args, '--resolve') });
   if (has(args, '--json')) return out(JSON.stringify(t, null, 2));
-  out(`Replied to thread #${id} as ${name}${t.resolved ? ' and resolved it' : ''}. Next: margin wait`);
+  out(`Replied to thread #${id} as ${name}${t.resolved ? ' and resolved it' : ''}.`);
 }
 
 async function cmdComment(args: Args): Promise<void> {
@@ -346,7 +388,8 @@ function cmdSetup(): void {
     if (r.status !== 'unchanged' && r.path.endsWith('.rules')) lines.push(...r.content.trimEnd().split('\n').map((l) => `          ${l}`));
   }
   out(lines.join('\n'));
-  out('Claude Code: ask "connect to margin" or use /margin. Codex: start a new session, then ask it to use the margin skill.');
+  out('Next: after you submit a review in Margin, tell your agent "Address the Margin feedback." To have it answer comments live, say "Watch Margin and answer my comments live."');
+  out('Codex: start a new Codex session so it loads the rule. Run `margin setup` again after you update Margin: the rule lists the margin subcommands Codex may run.');
 }
 
 function rangeSpec(s: string): ReviewSpec | null {
@@ -381,6 +424,10 @@ async function main(argv: string[]): Promise<void> {
       return cmdStop();
     case 'wait':
       return cmdWait(args);
+    case 'inbox':
+      return cmdInbox(args);
+    case 'export':
+      return cmdExport(args);
     case 'reply':
       return cmdReply(args);
     case 'comment':

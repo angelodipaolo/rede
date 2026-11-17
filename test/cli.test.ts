@@ -84,7 +84,7 @@ describe('setup', () => {
       const first = setup(home, env);
       expect(first.map((r) => r.status)).toEqual(['created', 'created', 'created']);
       const rules = fs.readFileSync(path.join(home, 'codex', 'rules', 'margin.rules'), 'utf8');
-      expect(rules).toContain('pattern = ["margin", ["wait", "reply"');
+      expect(rules).toContain('pattern = ["margin", ["inbox", "wait", "reply"');
       expect(rules).toContain('decision = "allow"');
       expect(rules).toContain(`host_executable(name = "margin", paths = ["${path.join(bin, 'margin')}"])`);
       expect(rules).not.toContain('"stop"');

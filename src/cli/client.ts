@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { Health } from '../shared/types.ts';
 import { marginDir, type RepoPaths } from '../server/git.ts';
 import { VERSION } from '../server/errors.ts';
+import { AGENT_COMMANDS } from './guide.ts';
 import { buildId, readServerInfo, serverInfoPath, type ServerInfo } from '../server/server.ts';
 
 export class ApiFailure extends Error {
@@ -142,11 +143,24 @@ export function codexRulesFile(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** Why a sandbox blocks margin and what to do, as "<reason>\n<fix>". */
-export function sandboxAdvice(env: NodeJS.ProcessEnv = process.env): string {
+export function sandboxAdvice(env: NodeJS.ProcessEnv = process.env, subcommand: string | undefined = process.argv[2]): string {
   if (!inCodex(env)) {
     return 'You are probably in a sandbox.\nFix: run margin commands outside the sandbox (allow the margin command, or approve escalation).';
   }
-  if (fs.existsSync(codexRulesFile(env))) {
+  let rules: string | null = null;
+  try {
+    rules = fs.readFileSync(codexRulesFile(env), 'utf8');
+  } catch {
+    /* not installed */
+  }
+  // A rule written by an older margin does not list newer subcommands (such as `inbox`).
+  if (rules !== null && subcommand && AGENT_COMMANDS.includes(subcommand) && !rules.includes(`"${subcommand}"`)) {
+    return (
+      `You are in the Codex sandbox, and the margin rule is from an older Margin: it does not list \`margin ${subcommand}\`.\n` +
+      'Fix: rerun this command with escalated permissions, and ask the user to run `margin setup` in a terminal and start a new Codex session.'
+    );
+  }
+  if (rules !== null) {
     return (
       'You are in the Codex sandbox: this command did not match the margin rule from `margin setup`.\n' +
       "Fix: rerun it as one plain command: no pipe, &&, redirection, heredoc or VAR= prefix, and no '\\'' escape in the -m text (write ’ instead of ')."

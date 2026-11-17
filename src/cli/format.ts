@@ -1,3 +1,4 @@
+import { renderOriginal } from '../server/context.ts';
 import type { AgentThread, DiffFile, Review, ReviewBatch, ReviewMode, ReviewSpec, Thread, WaitResponse } from '../shared/types.ts';
 
 /** What the agent must do for each mode. Plain imperative text: agents follow it literally. */
@@ -75,17 +76,25 @@ export function formatAgentThread(at: AgentThread, agentName: string, opts: { re
   const t = at.thread;
   const out: string[] = [];
   const flags = [t.resolved ? 'resolved' : 'open', `agent state: ${t.agentState}${t.claimedBy ? ` (${t.claimedBy})` : ''}`];
-  if (t.outdated) flags.push('OUTDATED: the anchored code changed or left the diff');
+  if (t.outdated)
+    flags.push(t.outdatedReason === 'file-gone' ? 'OUTDATED: the file is no longer in this diff' : 'OUTDATED: the commented code changed since the thread started');
   if (t.noteOnly) flags.push('private note');
   out.push(`## Thread #${t.id} · ${location(t)}`);
   out.push(`Review: ${at.review.title} [${at.review.id}] · ${flags.join(' · ')}`);
   out.push(modeLine(t, at.batchId ?? null));
   out.push(`Repo: ${at.repoRoot}`);
   out.push('');
+  const orig = t.original;
   if (at.diffContext) {
     out.push('Code (">" marks the commented lines; columns: old line, new line):');
     out.push(fence(at.diffContext, 'diff'));
-  } else if (t.snippet.length) {
+  }
+  if (t.outdated && orig && orig.lines.length) {
+    const where = [orig.head ? `commit ${orig.head.slice(0, 7)}` : null, orig.branch ? `branch ${orig.branch}` : null].filter(Boolean).join(', ');
+    out.push(`Original code when the thread started${where ? ` (${where})` : ''}. It has changed since: read the current file before you answer.`);
+    out.push('(">" marks the commented lines; columns: old line, new line)');
+    out.push(fence(renderOriginal(orig.lines) + (orig.truncated ? '\n  ... (anchor cut) ...' : ''), 'diff'));
+  } else if (!at.diffContext && t.snippet.length) {
     out.push('Commented lines as they were when the thread started:');
     out.push(fence(t.snippet.join('\n')));
   }
@@ -168,9 +177,13 @@ export function formatDiff(r: Review, stat: boolean): string {
 }
 
 /** A wait response: each submitted review under its own header, then one-off threads. */
-export function formatWait(r: WaitResponse, agentName: string, argStyle: boolean): string {
+export function formatWait(r: WaitResponse, agentName: string, argStyle: boolean, next: 'wait' | 'inbox' = 'wait'): string {
   const n = r.threads.length;
-  const parts = [`# ${n} thread${n > 1 ? 's' : ''} for you (${agentName})\nAnswer each one with \`margin reply <id>\`, then run \`margin wait\` again.`];
+  const then =
+    next === 'inbox'
+      ? 'Handle and answer each one with `margin reply <id>`. Then run `margin inbox` once more; when it prints "No feedback is waiting.", stop and summarize for the user.'
+      : 'Answer each one with `margin reply <id>`, then run `margin wait` again.';
+  const parts = [`# ${n} thread${n > 1 ? 's' : ''} for you (${agentName})\n${then}`];
   const block = (at: AgentThread) => formatAgentThread(at, agentName, { replyHint: true, argStyle });
   const batches = new Map(r.batches.map((b) => [b.id, b]));
   const grouped = new Map<number, AgentThread[]>();

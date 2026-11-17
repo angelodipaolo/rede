@@ -2,57 +2,84 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export const GUIDE = `# Margin: answer code review comments
+export const GUIDE = `# Margin: answer code review feedback
 
 Margin is a local code review tool. A human reviews a git diff in the browser
-and leaves comment threads on lines. You are a reviewer and assistant in those
-threads. You talk to Margin only through the \`margin\` command. Run it from
-inside the repository. It starts its local server (127.0.0.1) when needed.
+and leaves comment threads on lines. You answer in those threads. You talk to
+Margin only through the \`margin\` command. Run it from inside the repository.
+It starts its local server (127.0.0.1) when needed.
 
-## The loop
+Pick the way to work from what the user asked:
+
+- ONE PASS (the default). The user says "address the margin feedback", "read
+  the review", "answer my margin comments" or similar. Handle what is waiting
+  now, then stop.
+- WATCH. Only when the user explicitly asks you to watch Margin, wait for
+  comments, stay connected, or answer comments live.
+
+## One pass (default)
+
+1. Run \`margin inbox\`. It prints all feedback that waits for you and never
+   blocks: each submitted review (mode, the reviewer's note), then its threads
+   with the file, lines, diff context and conversation. If it prints "No
+   feedback is waiting.", tell the user that and stop.
+2. Handle every thread as its mode says (see "Modes"). Read the code first.
+3. Reply in every thread you received (see "Replying").
+4. Run \`margin inbox\` once more for feedback that arrived meanwhile. Handle it
+   the same way. When it prints "No feedback is waiting.", stop.
+5. Give the user a short summary in the chat: what you answered, what you
+   changed (files), and what is still open or where you disagreed.
+
+In one pass, do not run \`margin wait\` and do not loop.
+
+## Watch (only when asked)
 
 1. Run \`margin wait\`. It blocks until the human writes a comment for you and
-   uses no tokens while it waits. It prints each new thread: the file and lines,
-   the diff around them (">" marks the commented lines), and the whole
-   conversation.
-2. Investigate. Read the code, follow calls, run searches or tests if that helps.
-   Do what the thread's mode says (see "Modes" below).
-3. Reply: \`margin reply <id>\` with your answer on stdin:
-
-       margin reply 12 <<'MARGIN_EOF'
-       Your answer in markdown. Backticks and \`code\` are fine here.
-       MARGIN_EOF
-
-   Reply to every thread you received before you wait again.
-4. Run \`margin wait\` again. Keep looping until the user tells you to stop.
-   When \`wait\` prints "No new comments", run it again at once.
+   uses no tokens while it waits.
+2. Handle and reply to every thread it printed, as in one pass.
+3. Run \`margin wait\` again. When it prints "No new comments", run it again at
+   once. Stop when the user tells you to stop.
 
 In Claude Code: run \`margin wait --timeout 540\` with the Bash tool timeout set
-to 600000 ms, so you stay blocked for up to 9 minutes per call. Do not poll with
-sleep, and do not run it in the background: a blocked \`wait\` costs nothing.
+to 600000 ms. Do not poll with sleep, and do not run it in the background.
 In Codex: run \`margin wait\` (it returns after 100 seconds without comments),
-then run it again. Margin needs its server on 127.0.0.1 and writes .git/margin;
-the Codex sandbox blocks both. \`margin setup\` installs a Codex rule that runs
-margin commands outside the sandbox without a prompt. The rule matches only a
-plain command, so in Codex:
+then run it again.
+
+## Replying
+
+\`margin reply <id>\` with your answer on stdin:
+
+    margin reply 12 <<'MARGIN_EOF'
+    Your answer in markdown. Backticks and \`code\` are fine here.
+    MARGIN_EOF
+
+Reply to every thread you received. Never resolve a thread unless the human
+asks you to; the human resolves threads.
+
+## Codex
+
+Margin needs its server on 127.0.0.1 and writes .git/margin; the Codex sandbox
+blocks both. \`margin setup\` installs a Codex rule that runs margin commands
+outside the sandbox without a prompt. The rule matches only a plain command:
 - Run \`margin ...\` by name and alone: no pipe, \`&&\`, redirection, heredoc or
   VAR= prefix.
-- Give the text with -m in single quotes, not on stdin:
+- Give the reply with -m in single quotes, not on stdin:
 
       margin reply 12 -m 'Your answer in markdown. It’s fine to use \`code\`.'
 
   The text must not contain a straight ' (an escape like '\\'' breaks the
   match): write ’ instead.
 - If margin says the sandbox blocked it, do what its "Fix:" line says. If the
-  rule is not installed, rerun the command with escalated permissions, or ask
-  the user to run \`margin setup\` in a terminal and start a new Codex session.
+  rule is missing or older than this Margin, rerun the command with escalated
+  permissions, and ask the user to run \`margin setup\` in a terminal and start
+  a new Codex session.
 
 ## Modes
 
 Every thread shows a "Mode:" line. Follow it exactly.
 
-- ASK: a one-off comment, sent at once. Answer it. Change code only if the
-  comment asks for a change; then reply with what you changed.
+- ASK: a one-off comment. Answer it. Change code only if the comment asks for
+  a change; then reply with what you changed.
 - DISCUSS: part of a submitted review. Answer and discuss only. Do not change
   any code or files, even if a comment asks for a change; describe the change
   you would make instead.
@@ -61,17 +88,12 @@ Every thread shows a "Mode:" line. Follow it exactly.
   Answer questions. If a request is ambiguous or you disagree, say so in the
   thread and leave that code unchanged.
 
-A submitted review arrives in one \`wait\` as a "REVIEW #n" header (mode, the
-reviewer's overall note, the instruction) followed by its threads. One-off
-threads come after it. Reply to every thread before you wait again.
-
 ## How to answer
 
 - Answer the question. Be specific and short. Cite code as \`path:line\`.
 - Say what you checked. If you are not sure, say so and say how to find out.
-- Never resolve a thread unless the human asks you to. The human resolves threads.
-- A thread marked OUTDATED: the code it was on changed. Look at the current code
-  before you answer.
+- A thread marked OUTDATED: the code it was on changed. It shows the original
+  code; read the current code before you answer.
 
 ## Review findings
 
@@ -87,20 +109,23 @@ When the human asks you to review the diff:
    Use \`--old\` to comment on a deleted line (old side). \`margin comment <path>\`
    without a line starts a file-level thread. Only files in the diff accept
    comments. Report real issues (bugs, risks, missing cases), not style nits,
-   unless asked.
-3. Then go back to \`margin wait\` to answer follow-up questions.
+   unless asked. In Codex, use -m as above.
+3. Then stop and tell the user how many threads you left (in watch mode, go
+   back to \`margin wait\`).
 
 ## Other commands
 
-- \`margin threads\` lists open threads (\`--pending\` for unanswered, \`--all\`).
-- \`margin show <id>\` prints one thread with its context.
+- \`margin threads\` lists open threads (\`--pending\` for unanswered, \`--all\`
+  also lists resolved and old ones).
+- \`margin show <id>\` prints one thread with its context, and the original code
+  of an outdated thread.
 - \`margin release\` gives back threads you received but will not answer.
 - Add \`--as <name>\` to set your name, \`--review <id>\` to pick a review,
   \`--json\` for raw JSON.
 `;
 
 const DESCRIPTION =
-  'Answer code review comments in Margin, the local diff review tool. Use when the user asks you to connect to Margin, answer or watch review comments, run `margin wait`, or leave review findings on a diff as Margin threads.';
+  'Answer code review feedback in Margin, the local diff review tool. Use when the user says "address margin feedback", "address the review", "read the review", "answer my margin comments", "watch margin", or asks you to connect to Margin, run `margin inbox` or `margin wait`, or leave review findings on a diff as Margin threads.';
 
 /**
  * The installed skill only points at `margin guide`, so it never goes stale when Margin changes:
@@ -109,8 +134,12 @@ const DESCRIPTION =
 export const SKILL_BODY = `# Margin
 
 Run \`margin guide\` first and follow what it prints. It is the current guide
-for the installed Margin version: how to wait for review comments, how to
-reply, and what each mode (ask, discuss, implement) allows you to do.
+for the installed Margin version: how to read the feedback, how to reply, and
+what each mode (ask, discuss, implement) allows you to do.
+
+By default, handle the waiting feedback once (\`margin inbox\`), reply in every
+thread, then stop and summarize. Loop on \`margin wait\` only when the user asks
+you to watch Margin or answer comments live.
 
 Run margin by name and alone (no pipe, redirection or heredoc around
 \`margin guide\`). If \`margin\` is not found, tell the user to install Margin
@@ -143,7 +172,7 @@ function writeIfChanged(file: string, content: string, what: string): SetupResul
 }
 
 /** The margin agent commands. `margin` alone (opens a browser), stop and setup are left out. */
-export const AGENT_COMMANDS = ['wait', 'reply', 'comment', 'threads', 'show', 'diff', 'release', 'resolve', 'status', 'list', 'guide'];
+export const AGENT_COMMANDS = ['inbox', 'wait', 'reply', 'comment', 'threads', 'show', 'diff', 'release', 'resolve', 'status', 'list', 'guide'];
 
 /** Executable files named margin on PATH, as absolute paths. */
 export function marginOnPath(env: NodeJS.ProcessEnv = process.env): string[] {
