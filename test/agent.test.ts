@@ -53,7 +53,7 @@ describe('agent state, wait, claims and redelivery', () => {
   it('times out with no threads', async () => {
     await setup();
     const r = await m.wait('claude', 100, null);
-    expect(r).toEqual({ threads: [], timedOut: true });
+    expect(r).toEqual({ threads: [], batches: [], timedOut: true });
   });
 
   it('does not deliver notes, resolved threads or threads where the agent spoke last', async () => {
@@ -86,7 +86,7 @@ describe('agent state, wait, claims and redelivery', () => {
     const ac = new AbortController();
     const p = m.wait('claude', 1000, null, ac.signal);
     ac.abort(); // e.g. Ctrl-C while the response is being built
-    expect(await p).toEqual({ threads: [], timedOut: true });
+    expect(await p).toEqual({ threads: [], batches: [], timedOut: true });
     expect((await m.getThread(t.id)).agentState).toBe('pending');
     expect((await m.wait('codex', 100, null)).threads.map((x) => x.thread.id)).toEqual([t.id]);
   });
@@ -95,7 +95,7 @@ describe('agent state, wait, claims and redelivery', () => {
     await setup();
     const ac = new AbortController();
     ac.abort();
-    expect(await m.wait('claude', 60_000, null, ac.signal)).toEqual({ threads: [], timedOut: true });
+    expect(await m.wait('claude', 60_000, null, ac.signal)).toEqual({ threads: [], batches: [], timedOut: true });
     expect(m.waiterCount).toBe(0);
   });
 

@@ -122,6 +122,45 @@ describe('HTTP end to end', () => {
     stream.close();
   });
 
+  it('queues a review, submits it as one batch, discards the next one', async () => {
+    const port = await setup();
+    await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } });
+    const stream = sse(port, '/api/reviews/working/events');
+    await stream.waitFor((e) => e.type === 'agents');
+    const human = { kind: 'human', name: 'you' };
+    const queue = (line: number) =>
+      req<Thread>(port, 'POST', '/api/reviews/working/threads', { anchor: { path: 'app.ts', side: 'new', startLine: line, endLine: line }, body: `c${line}`, author: human, pending: true });
+    expect((await queue(4)).json.messages[0]).toMatchObject({ pending: true });
+    await queue(8);
+    await stream.waitFor((e) => e.type === 'pending' && e.pendingCount === 2);
+    const agentPending = await req(port, 'POST', '/api/reviews/working/threads', {
+      anchor: { path: 'app.ts', side: 'new', startLine: 9, endLine: 9 },
+      body: 'x',
+      author: { kind: 'agent', name: 'claude' },
+      pending: true,
+    });
+    expect(agentPending.status).toBe(400);
+    expect((await req(port, 'GET', '/api/agent/threads?state=all')).json).toEqual([]);
+
+    const sub = await req(port, 'POST', '/api/reviews/working/submit', { mode: 'implement', body: 'Go' });
+    expect(sub.status).toBe(200);
+    expect(sub.json).toMatchObject({ mode: 'implement', body: 'Go', threadIds: expect.any(Array) });
+    await stream.waitFor((e) => e.type === 'batch' && e.batch.id === sub.json.id && e.pendingCount === 0);
+    expect((await req(port, 'POST', '/api/reviews/working/submit', { mode: 'discuss' })).status).toBe(400);
+    const review = (await req(port, 'GET', '/api/reviews/working')).json;
+    expect(review).toMatchObject({ pendingCount: 0, batches: [sub.json] });
+
+    const w = await req<WaitResponse>(port, 'GET', '/api/agent/wait?agent=claude&timeout=2');
+    expect(w.json.threads).toHaveLength(2);
+    expect(w.json.batches).toEqual([sub.json]);
+
+    const t = await queue(12);
+    expect((await req(port, 'DELETE', '/api/reviews/working/pending')).json).toEqual({ ok: true });
+    await stream.waitFor((e) => e.type === 'thread-deleted' && e.threadId === t.json.id);
+    await stream.waitFor((e) => e.type === 'pending' && e.pendingCount === 0);
+    stream.close();
+  });
+
   it('drops SSE subscribers and waiters when clients disconnect', async () => {
     const port = await setup();
     await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } });

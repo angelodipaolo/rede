@@ -194,6 +194,13 @@ export function createHttpServer(margin: Margin, opts: HttpOptions): http.Server
         const body = await readJson(req);
         return sendJson(res, 200, await margin.createThread(seg[1]!, parseScope(q.get('scope')), body));
       }
+      case 'POST reviews/:id/submit': {
+        const body = await readJson(req);
+        return sendJson(res, 200, margin.submitReview(seg[1]!, body));
+      }
+      case 'DELETE reviews/:id/pending':
+        margin.discardPending(seg[1]!);
+        return sendJson(res, 200, { ok: true });
       case 'GET reviews/:id/events':
         return sse(seg[1]!, parseScope(q.get('scope')), req, res);
       case 'GET threads/:id':

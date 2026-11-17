@@ -431,4 +431,9 @@ export interface AgentThread {
    * Null for outdated threads and file-level threads.
    */
   diffContext: string | null;
+  /**
+   * The batch that released the latest human message of this thread, or null when that message
+   * was a one-off (mode 'ask'). Lets a client group a wait response by batch.
+   */
+  batchId: number | null;
 }

@@ -12,12 +12,14 @@ import type {
   Message,
   RepoInfo,
   Review,
+  ReviewBatch,
   ReviewScope,
   ReviewSpec,
   ReviewSummary,
   ServerEvent,
   Side,
   SinceViewed,
+  SubmitReviewRequest,
   Thread,
   UpdateThreadRequest,
   WaitResponse,
@@ -56,7 +58,7 @@ import {
   type RepoPaths,
 } from './git.ts';
 import { IndexTreeReader, WorkingSnapshotter } from './snapshot.ts';
-import type { MessageRow, ReviewRow, Store, Target, ThreadRow } from './store.ts';
+import type { BatchRow, MessageRow, ReviewRow, Store, Target, ThreadRow } from './store.ts';
 import { renderDiffContext } from './context.ts';
 
 export const SCOPE_SIDES: Record<ReviewScope, { old: Target; new: Target }> = {
@@ -155,12 +157,31 @@ function slug(s: string): string {
 
 function toMessage(m: MessageRow): Message {
   return {
+    pending: m.pending,
+    batchId: m.batchId,
     id: m.id,
     author: { kind: m.authorKind, name: m.authorName },
     body: m.body,
     createdAt: m.createdAt,
     editedAt: m.editedAt,
   };
+}
+
+function toBatch(b: BatchRow): ReviewBatch {
+  return { id: b.id, reviewId: b.reviewId, mode: b.mode, body: b.body, submittedAt: b.submittedAt, threadIds: b.threadIds };
+}
+
+/** Messages an agent can see: pending ones wait in the human's review in progress. */
+const submitted = (msgs: MessageRow[]) => msgs.filter((m) => !m.pending);
+
+/** The batch of the latest submitted human message, or null for a one-off (or no human message). */
+function batchOfLatest(msgs: MessageRow[]): number | null {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.pending || m.authorKind !== 'human') continue;
+    return m.batchId;
+  }
+  return null;
 }
 
 /** Text of blobs by id. Blobs never change, so a plain bounded cache is safe. */
@@ -189,6 +210,8 @@ export class Margin {
   private waiters = new Set<Waiter>();
   private lingering = new Map<string, { since: string; until: number }>();
   private presenceKey = '';
+  /** Last pending count sent to browsers, per review. */
+  private pendingSent = new Map<string, number>();
   private timers: NodeJS.Timeout[] = [];
   private closed = false;
   /** Called on any API activity; the server uses it for idle shutdown. */
@@ -519,6 +542,8 @@ export class Margin {
       diffFingerprint: state.fingerprints[scope] ?? '',
       files: out,
       threads: this.store.threadsOfReview(id).map((t) => this.toThread(t, scope, state)),
+      batches: this.store.batchesOf(id).map(toBatch),
+      pendingCount: this.store.pendingCount(id),
       agents: this.agents(),
     };
   }
@@ -721,15 +746,20 @@ export class Margin {
     return !!t.claimedBy && t.claimedAt !== null && Date.now() - t.claimedAt < this.claimTimeoutMs;
   }
 
+  /** Computed from submitted messages only: pending messages are invisible to agents. */
   private agentStateOf(t: ThreadRow, msgs: MessageRow[]): { state: AgentState; claimedBy: string | null } {
-    const last = msgs[msgs.length - 1];
+    const sent = submitted(msgs);
+    const last = sent[sent.length - 1];
     if (t.resolved || t.noteOnly || !last || last.authorKind === 'agent') return { state: 'idle', claimedBy: null };
     if (this.claimValid(t)) return { state: 'working', claimedBy: t.claimedBy };
     return { state: 'pending', claimedBy: null };
   }
 
-  /** Converts a thread row to the API shape, expressed in the given scope. */
-  toThread(t: ThreadRow, scope: ReviewScope, state: ReviewState | null, msgs = this.store.messagesOf(t.id)): Thread {
+  /**
+   * Converts a thread row to the API shape, expressed in the given scope.
+   * @param forAgent leave out pending messages (agents never see them).
+   */
+  toThread(t: ThreadRow, scope: ReviewScope, state: ReviewState | null, msgs = this.store.messagesOf(t.id), forAgent = false): Thread {
     let inScope = false;
     let viewScope: ReviewScope = t.homeScope;
     let loc = null as ReturnType<Margin['locate']>;
@@ -761,16 +791,21 @@ export class Margin {
       resolved: t.resolved,
       noteOnly: t.noteOnly,
       agentState,
+      mode: t.mode,
       claimedBy,
-      messages: msgs.map(toMessage),
+      messages: (forAgent ? submitted(msgs) : msgs).map(toMessage),
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     };
   }
 
+  private missingThread(tid: number): HttpError {
+    return notFound(`Thread ${tid} not found. It may have been deleted. Run \`margin threads --all\` to list threads.`);
+  }
+
   private requireThread(tid: number): ThreadRow {
     const t = Number.isInteger(tid) ? this.store.getThread(tid) : null;
-    if (!t) throw notFound(`Thread ${tid} not found. It may have been deleted. Run \`margin threads --all\` to list threads.`);
+    if (!t) throw this.missingThread(tid);
     return t;
   }
 
@@ -792,9 +827,18 @@ export class Margin {
     return { kind: au.kind, name };
   }
 
+  /** Pending messages: human only, never in a note (a note is never sent). */
+  private validatePending(pending: unknown, author: { kind: string }, noteOnly: boolean): boolean {
+    if (!pending) return false;
+    if (author.kind !== 'human') throw badRequest('Only the human reviewer can add pending messages. Agents reply at once.');
+    if (noteOnly) throw badRequest('A private note is never sent to an agent, so it cannot be part of a review. Send it as a note, or as a comment.');
+    return true;
+  }
+
   async createThread(reviewId: string, scope: ReviewScope, req: CreateThreadRequest): Promise<Thread> {
     const body = this.validateBody(req?.body);
     const author = this.validateAuthor(req?.author);
+    const pending = this.validatePending(req?.pending, author, !!req?.noteOnly);
     const a = req?.anchor;
     if (!a || typeof a.path !== 'string') throw badRequest('Missing anchor.path.');
     if (a.side !== 'old' && a.side !== 'new') throw badRequest('anchor.side must be "old" or "new".');
@@ -842,11 +886,12 @@ export class Margin {
         createdAt: now,
         updatedAt: now,
       });
-      this.store.insertMessage(id, author.kind, author.name, body, now);
+      this.store.insertMessage(id, author.kind, author.name, body, now, pending);
       this.store.touchReviewUpdated(reviewId, now);
       return id;
     });
     this.afterThreadChange(tid);
+    this.emitPending(reviewId);
     return this.toThread(this.store.getThread(tid)!, scope, state);
   }
 
@@ -858,6 +903,9 @@ export class Margin {
       if (req.resolved) Object.assign(patch, { claimedBy: null, claimedAt: null });
     }
     if (req?.noteOnly !== undefined) {
+      if (req.noteOnly && this.store.messagesOf(tid).some((m) => m.pending)) {
+        throw badRequest('This thread has pending review comments. A private note is never sent: submit or remove them first.');
+      }
       patch.noteOnly = !!req.noteOnly;
       if (req.noteOnly) Object.assign(patch, { claimedBy: null, claimedAt: null });
     }
@@ -872,6 +920,7 @@ export class Margin {
     this.store.deleteThread(tid);
     this.store.touchReviewUpdated(t.reviewId, nowIso());
     this.broadcast(t.reviewId, () => ({ type: 'thread-deleted', threadId: tid }));
+    this.emitPending(t.reviewId);
     this.refreshPresence();
   }
 
@@ -879,18 +928,29 @@ export class Margin {
     const t = this.requireThread(tid);
     const body = this.validateBody(req?.body);
     const author = this.validateAuthor(req?.author);
+    const pending = this.validatePending(req?.pending, author, t.noteOnly);
+    if (pending && req.resolve) throw badRequest('A pending message cannot resolve the thread. Resolve it after the review is submitted.');
+    // A thread with only pending messages does not exist for agents yet.
+    if (author.kind === 'agent' && !this.visibleToAgents(t)) throw this.missingThread(tid);
     const now = nowIso();
     this.store.transaction(() => {
-      this.store.insertMessage(tid, author.kind, author.name, body, now);
+      this.store.insertMessage(tid, author.kind, author.name, body, now, pending);
       const patch: Partial<ThreadRow> = { updatedAt: now };
       if (author.kind === 'agent') Object.assign(patch, { claimedBy: null, claimedAt: null });
+      if (author.kind === 'human' && !pending) patch.mode = 'ask'; // a one-off message
       if (req.resolve) Object.assign(patch, { resolved: true, claimedBy: null, claimedAt: null });
-      else if (author.kind === 'human' && t.resolved) patch.resolved = false; // a new question reopens the thread
+      else if (author.kind === 'human' && !pending && t.resolved) patch.resolved = false; // a new question reopens the thread
       this.store.updateThread(tid, patch);
       this.store.touchReviewUpdated(t.reviewId, now);
     });
     this.afterThreadChange(tid);
+    if (pending) this.emitPending(t.reviewId);
     return this.getThread(tid, scope);
+  }
+
+  /** False while the thread has only pending messages. */
+  private visibleToAgents(t: ThreadRow, msgs = this.store.messagesOf(t.id)): boolean {
+    return msgs.some((m) => !m.pending);
   }
 
   async editMessage(mid: number, body: string, scope?: ReviewScope): Promise<Thread> {
@@ -912,7 +972,82 @@ export class Margin {
     this.store.deleteMessage(mid);
     this.store.updateThread(m.threadId, { updatedAt: nowIso() });
     this.afterThreadChange(m.threadId);
+    if (m.pending) this.emitPending(this.store.getThread(m.threadId)!.reviewId);
     return this.getThread(m.threadId, scope);
+  }
+
+  // ================================================================ review batches
+
+  /**
+   * Submits the review in progress: every pending message of the review is released in one
+   * transaction as one batch. Touched threads get the batch's mode, reopen, lose any claim and
+   * become 'pending' for agents, so the whole batch goes to the next waiting agent at once.
+   */
+  submitReview(reviewId: string, req: SubmitReviewRequest): ReviewBatch {
+    this.requireReview(reviewId);
+    const mode = req?.mode;
+    if (mode !== 'discuss' && mode !== 'implement') throw badRequest('mode must be "discuss" or "implement".');
+    if (req.body !== undefined && typeof req.body !== 'string') throw badRequest('body must be a string.');
+    const note = (req.body ?? '').trim();
+    const now = nowIso();
+    const batch = this.store.transaction(() => {
+      const msgs = this.store.pendingMessages(reviewId);
+      if (!msgs.length) throw badRequest('Nothing to submit: the review has no pending comments.');
+      const threadIds = [...new Set(msgs.map((m) => m.threadId))];
+      const row = { reviewId, mode, body: note, submittedAt: now, threadIds };
+      const id = this.store.insertBatch(row);
+      this.store.releaseMessages(
+        msgs.map((m) => m.id),
+        id,
+      );
+      for (const tid of threadIds) {
+        this.store.updateThread(tid, { mode, resolved: false, claimedBy: null, claimedAt: null, deliveredUpTo: 0, updatedAt: now });
+      }
+      this.store.touchReviewUpdated(reviewId, now);
+      return { id, ...row };
+    });
+    for (const tid of batch.threadIds) this.emitThread(tid);
+    this.pendingSent.set(reviewId, 0);
+    const out = toBatch(batch);
+    this.broadcast(reviewId, () => ({ type: 'batch', batch: out, pendingCount: 0 }));
+    this.wakeWaiters();
+    this.refreshPresence();
+    return out;
+  }
+
+  /** Discards the review in progress: all pending messages, and threads left without messages. */
+  discardPending(reviewId: string): { deleted: number[]; changed: number[] } {
+    this.requireReview(reviewId);
+    const now = nowIso();
+    const res = this.store.transaction(() => {
+      const msgs = this.store.pendingMessages(reviewId);
+      for (const m of msgs) this.store.deleteMessage(m.id);
+      const deleted: number[] = [];
+      const changed: number[] = [];
+      for (const tid of new Set(msgs.map((m) => m.threadId))) {
+        if (this.store.messagesOf(tid).length === 0) {
+          this.store.deleteThread(tid);
+          deleted.push(tid);
+        } else {
+          this.store.updateThread(tid, { updatedAt: now });
+          changed.push(tid);
+        }
+      }
+      if (msgs.length) this.store.touchReviewUpdated(reviewId, now);
+      return { deleted, changed };
+    });
+    for (const tid of res.deleted) this.broadcast(reviewId, () => ({ type: 'thread-deleted', threadId: tid }));
+    for (const tid of res.changed) this.emitThread(tid);
+    this.emitPending(reviewId);
+    return res;
+  }
+
+  /** Sends the pending count to browsers when it changed. */
+  private emitPending(reviewId: string): void {
+    const n = this.store.pendingCount(reviewId);
+    if (this.pendingSent.get(reviewId) === n) return;
+    this.pendingSent.set(reviewId, n);
+    this.broadcast(reviewId, () => ({ type: 'pending', pendingCount: n }));
   }
 
   /** Emits the thread, wakes waiters and updates presence. */
@@ -955,6 +1090,7 @@ export class Margin {
     const state = await this.compute(reviewId);
     this.checkScope(state, scope);
     const sub: Subscriber = { reviewId, scope, send, lastFingerprint: state.fingerprints[scope] ?? null };
+    if (!this.pendingSent.has(reviewId)) this.pendingSent.set(reviewId, this.store.pendingCount(reviewId));
     this.subscribers.add(sub);
     send({ type: 'agents', agents: this.agents() });
     if (!this.pollers.has(reviewId)) {
@@ -1030,7 +1166,7 @@ export class Margin {
     const now = Date.now();
     for (const t of rows) {
       if (t.resolved || t.noteOnly) continue;
-      const msgs = this.store.messagesOf(t.id);
+      const msgs = submitted(this.store.messagesOf(t.id));
       const last = msgs[msgs.length - 1];
       if (!last || last.authorKind !== 'human') continue;
       const valid = this.claimValid(t);
@@ -1038,14 +1174,18 @@ export class Margin {
       this.store.updateThread(t.id, { claimedBy: agent, claimedAt: now, deliveredUpTo: last.id });
       out.push({ ...t, claimedBy: agent, claimedAt: now, deliveredUpTo: last.id });
     }
-    return out;
+    // Batches first, each one's threads together, then one-off threads.
+    const key = (t: ThreadRow) => batchOfLatest(this.store.messagesOf(t.id)) ?? Number.MAX_SAFE_INTEGER;
+    const keys = new Map(out.map((t) => [t.id, key(t)]));
+    return out.sort((a, b) => keys.get(a.id)! - keys.get(b.id)! || a.id - b.id);
   }
 
   async agentThread(t: ThreadRow, state?: ReviewState): Promise<AgentThread> {
     const st = state ?? (await this.freshState(t.reviewId, 1000));
     const found = this.findForThread(t, st);
     const scope = found?.scope ?? t.homeScope;
-    const thread = this.toThread(t, scope, st);
+    const msgs = this.store.messagesOf(t.id);
+    const thread = this.toThread(t, scope, st, msgs, true);
     let diffContext: string | null = null;
     if (found && !t.outdated && t.startLine !== null && t.endLine !== null && found.id) {
       const meta = (await this.metaFiles(st, scope)).find((x) => x.path === displayPath(found.entry));
@@ -1058,6 +1198,7 @@ export class Margin {
       review: { id: st.review.id, title: st.review.title, spec: st.review.spec, from: st.resolved.from, to: st.resolved.to },
       repoRoot: this.repo.root,
       diffContext,
+      batchId: batchOfLatest(msgs),
     };
   }
 
@@ -1081,6 +1222,7 @@ export class Margin {
     const ids = reviewId ? [reviewId] : this.store.listReviews().map((r) => r.id);
     for (const id of ids) await this.freshState(id, 1000).catch(() => null);
     const rows = (reviewId ? this.store.threadsOfReview(reviewId) : this.store.allThreads()).filter((t) => {
+      if (!this.visibleToAgents(t)) return false;
       if (filter === 'all') return true;
       if (filter === 'open') return !t.resolved;
       return this.agentStateOf(t, this.store.messagesOf(t.id)).state === 'pending';
@@ -1090,6 +1232,7 @@ export class Margin {
 
   async agentThreadById(tid: number): Promise<AgentThread> {
     const t = this.requireThread(tid);
+    if (!this.visibleToAgents(t)) throw this.missingThread(tid);
     await this.freshState(t.reviewId, 1000);
     return this.agentThread(this.store.getThread(tid)!);
   }
@@ -1097,7 +1240,7 @@ export class Margin {
   async wait(agent: string, timeoutMs: number, reviewId: string | null, signal?: AbortSignal): Promise<WaitResponse> {
     if (!agent) throw badRequest('Missing agent name.');
     if (reviewId) this.requireReview(reviewId);
-    if (signal?.aborted) return { threads: [], timedOut: true };
+    if (signal?.aborted) return { threads: [], batches: [], timedOut: true };
     const now = this.takeDeliverable(agent, reviewId);
     if (now.length) return this.handOver(agent, now, signal);
     const since = nowIso();
@@ -1122,7 +1265,7 @@ export class Margin {
       this.refreshPresence();
     });
     this.refreshPresence();
-    if (!rows || !rows.length) return { threads: [], timedOut: true };
+    if (!rows || !rows.length) return { threads: [], batches: [], timedOut: true };
     return this.handOver(agent, rows, signal);
   }
 
@@ -1143,9 +1286,14 @@ export class Margin {
     }
     if (signal?.aborted) {
       this.unclaim(agent, rows);
-      return { threads: [], timedOut: true };
+      return { threads: [], batches: [], timedOut: true };
     }
-    return { threads, timedOut: false };
+    const ids = [...new Set(threads.flatMap((t) => (t.batchId === null ? [] : [t.batchId])))];
+    const batches = ids.flatMap((id) => {
+      const b = this.store.getBatch(id);
+      return b ? [toBatch(b)] : [];
+    });
+    return { threads, batches, timedOut: false };
   }
 
   /** Gives back claims taken by one hand-over, unless something changed them since. */

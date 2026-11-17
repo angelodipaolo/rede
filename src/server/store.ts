@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { AuthorKind, ReviewScope, ReviewSpec } from '../shared/types.ts';
+import type { AuthorKind, ReviewMode, ReviewScope, ReviewSpec } from '../shared/types.ts';
 
 /** Which content a thread was written on. 'index' exists only in working reviews. */
 export type Target = 'old' | 'index' | 'new';
@@ -32,6 +32,8 @@ export interface ThreadRow {
   outdated: boolean;
   resolved: boolean;
   noteOnly: boolean;
+  /** Mode of the latest submitted human message. */
+  mode: ReviewMode;
   claimedBy: string | null;
   claimedAt: number | null;
   deliveredUpTo: number;
@@ -47,6 +49,17 @@ export interface MessageRow {
   body: string;
   createdAt: string;
   editedAt: string | null;
+  pending: boolean;
+  batchId: number | null;
+}
+
+export interface BatchRow {
+  id: number;
+  reviewId: string;
+  mode: 'discuss' | 'implement';
+  body: string;
+  submittedAt: string;
+  threadIds: number[];
 }
 
 export interface ViewedRow {
@@ -99,6 +112,7 @@ CREATE TABLE IF NOT EXISTS threads (
   outdated INTEGER NOT NULL DEFAULT 0,
   resolved INTEGER NOT NULL DEFAULT 0,
   note_only INTEGER NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'ask',
   claimed_by TEXT,
   claimed_at INTEGER,
   delivered_upto INTEGER NOT NULL DEFAULT 0,
@@ -113,9 +127,20 @@ CREATE TABLE IF NOT EXISTS messages (
   author_name TEXT NOT NULL,
   body TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  edited_at TEXT
+  edited_at TEXT,
+  pending INTEGER NOT NULL DEFAULT 0,
+  batch_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id);
+CREATE TABLE IF NOT EXISTS batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  body TEXT NOT NULL,
+  submitted_at TEXT NOT NULL,
+  thread_ids TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS batches_review ON batches(review_id);
 CREATE TABLE IF NOT EXISTS viewed (
   review_id TEXT NOT NULL,
   scope TEXT NOT NULL,
@@ -146,6 +171,7 @@ function threadFromRow(r: Row): ThreadRow {
     outdated: Number(r.outdated) === 1,
     resolved: Number(r.resolved) === 1,
     noteOnly: Number(r.note_only) === 1,
+    mode: ((r.mode as string | null) ?? 'ask') as ReviewMode,
     claimedBy: (r.claimed_by as string | null) ?? null,
     claimedAt: r.claimed_at === null ? null : Number(r.claimed_at),
     deliveredUpTo: Number(r.delivered_upto),
@@ -163,8 +189,31 @@ function messageFromRow(r: Row): MessageRow {
     body: String(r.body),
     createdAt: String(r.created_at),
     editedAt: (r.edited_at as string | null) ?? null,
+    pending: Number(r.pending) === 1,
+    batchId: r.batch_id === null || r.batch_id === undefined ? null : Number(r.batch_id),
   };
 }
+
+function batchFromRow(r: Row): BatchRow {
+  return {
+    id: Number(r.id),
+    reviewId: String(r.review_id),
+    mode: r.mode as BatchRow['mode'],
+    body: String(r.body),
+    submittedAt: String(r.submitted_at),
+    threadIds: JSON.parse(String(r.thread_ids)) as number[],
+  };
+}
+
+/**
+ * Columns added after the first release. Databases created before them get the columns in place
+ * (ALTER TABLE ADD COLUMN keeps every row). Old messages become submitted one-off messages.
+ */
+const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
+  ['threads', 'mode', "mode TEXT NOT NULL DEFAULT 'ask'"],
+  ['messages', 'pending', 'pending INTEGER NOT NULL DEFAULT 0'],
+  ['messages', 'batch_id', 'batch_id INTEGER'],
+];
 
 function reviewFromRow(r: Row): ReviewRow {
   return {
@@ -182,6 +231,15 @@ export class Store {
   constructor(private readonly db: DatabaseSync) {
     db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
     db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    for (const [table, column, ddl] of ADDED_COLUMNS) {
+      const cols = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map((c) => String(c.name));
+      if (!cols.includes(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS messages_pending ON messages(pending) WHERE pending = 1');
   }
 
   static async open(file: string): Promise<Store> {
@@ -245,7 +303,7 @@ export class Store {
 
   // ------------------------------------------------------------ threads
 
-  insertThread(t: Omit<ThreadRow, 'id' | 'outdated' | 'resolved' | 'claimedBy' | 'claimedAt' | 'deliveredUpTo' | 'pathHint'> & { pathHint: string | null }): number {
+  insertThread(t: Omit<ThreadRow, 'id' | 'outdated' | 'resolved' | 'claimedBy' | 'claimedAt' | 'deliveredUpTo' | 'pathHint' | 'mode'> & { pathHint: string | null }): number {
     const r = this.db
       .prepare(
         `INSERT INTO threads (review_id, target, home_scope, path, path_hint, start_line, end_line, snippet, ctx_before, ctx_after, note_only, created_at, updated_at)
@@ -292,6 +350,7 @@ export class Store {
       outdated: 'outdated',
       resolved: 'resolved',
       noteOnly: 'note_only',
+      mode: 'mode',
       claimedBy: 'claimed_by',
       claimedAt: 'claimed_at',
       deliveredUpTo: 'delivered_upto',
@@ -316,11 +375,51 @@ export class Store {
 
   // ------------------------------------------------------------ messages
 
-  insertMessage(threadId: number, kind: AuthorKind, name: string, body: string, now: string): number {
+  insertMessage(threadId: number, kind: AuthorKind, name: string, body: string, now: string, pending = false): number {
     const r = this.db
-      .prepare('INSERT INTO messages (thread_id, author_kind, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(threadId, kind, name, body, now);
+      .prepare('INSERT INTO messages (thread_id, author_kind, author_name, body, created_at, pending) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(threadId, kind, name, body, now, pending ? 1 : 0);
     return Number(r.lastInsertRowid);
+  }
+
+  /** Pending messages of one review, oldest first. */
+  pendingMessages(reviewId: string): MessageRow[] {
+    return (
+      this.db
+        .prepare('SELECT m.* FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.review_id = ? AND m.pending = 1 ORDER BY m.id')
+        .all(reviewId) as Row[]
+    ).map(messageFromRow);
+  }
+
+  pendingCount(reviewId: string): number {
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS n FROM messages m JOIN threads t ON t.id = m.thread_id WHERE t.review_id = ? AND m.pending = 1')
+      .get(reviewId) as Row;
+    return Number(r.n);
+  }
+
+  /** Marks messages as submitted by a batch. */
+  releaseMessages(ids: number[], batchId: number): void {
+    const st = this.db.prepare('UPDATE messages SET pending = 0, batch_id = ? WHERE id = ?');
+    for (const id of ids) st.run(batchId, id);
+  }
+
+  // ------------------------------------------------------------ batches
+
+  insertBatch(b: Omit<BatchRow, 'id'>): number {
+    const r = this.db
+      .prepare('INSERT INTO batches (review_id, mode, body, submitted_at, thread_ids) VALUES (?, ?, ?, ?, ?)')
+      .run(b.reviewId, b.mode, b.body, b.submittedAt, JSON.stringify(b.threadIds));
+    return Number(r.lastInsertRowid);
+  }
+
+  getBatch(id: number): BatchRow | null {
+    const r = this.db.prepare('SELECT * FROM batches WHERE id = ?').get(id) as Row | undefined;
+    return r ? batchFromRow(r) : null;
+  }
+
+  batchesOf(reviewId: string): BatchRow[] {
+    return (this.db.prepare('SELECT * FROM batches WHERE review_id = ? ORDER BY id').all(reviewId) as Row[]).map(batchFromRow);
   }
 
   messagesOf(threadId: number): MessageRow[] {
