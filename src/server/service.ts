@@ -993,12 +993,13 @@ export class Margin {
     const batch = this.store.transaction(() => {
       const msgs = this.store.pendingMessages(reviewId);
       if (!msgs.length) throw badRequest('Nothing to submit: the review has no pending comments.');
-      const threadIds = [...new Set(msgs.map((m) => m.threadId))];
+      const threadIds = [...new Set(msgs.map((m) => m.threadId))].sort((a, b) => a - b);
       const row = { reviewId, mode, body: note, submittedAt: now, threadIds };
       const id = this.store.insertBatch(row);
       this.store.releaseMessages(
         msgs.map((m) => m.id),
         id,
+        now,
       );
       for (const tid of threadIds) {
         this.store.updateThread(tid, { mode, resolved: false, claimedBy: null, claimedAt: null, deliveredUpTo: 0, updatedAt: now });

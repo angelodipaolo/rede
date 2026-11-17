@@ -78,6 +78,22 @@ describe('one-off comments and batched reviews', () => {
     expect(t2.mode).toBe('discuss');
   });
 
+  it('a pending reply written before the agent answered is delivered after submit, as the latest message', async () => {
+    await setup();
+    const t = await on(5, 'Q1');
+    await m.wait('claude', 100, null);
+    await m.addMessage(t.id, { body: 'Q2 (one-off)', author: human });
+    await m.addMessage(t.id, { body: 'later question', author: human, pending: true });
+    await m.addMessage(t.id, { body: 'answer to Q1 and Q2', author: agent() });
+    expect((await m.getThread(t.id)).agentState).toBe('idle');
+    m.submitReview('working', { mode: 'discuss' });
+    const after = await m.getThread(t.id);
+    expect(after.messages.map((x) => x.body)).toEqual(['Q1', 'Q2 (one-off)', 'answer to Q1 and Q2', 'later question']);
+    expect(after.agentState).toBe('pending');
+    const w = await m.wait('claude', 200, null);
+    expect(w.threads.map((x) => x.thread.id)).toEqual([t.id]);
+  });
+
   it('rejects pending messages from agents and in notes', async () => {
     await setup();
     await expect(

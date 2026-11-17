@@ -398,10 +398,21 @@ export class Store {
     return Number(r.n);
   }
 
-  /** Marks messages as submitted by a batch. */
-  releaseMessages(ids: number[], batchId: number): void {
-    const st = this.db.prepare('UPDATE messages SET pending = 0, batch_id = ? WHERE id = ?');
-    for (const id of ids) st.run(batchId, id);
+  /**
+   * Marks messages as submitted by a batch. They get new ids and the submit time, so each one
+   * comes after every message already in its thread (an agent may have replied while it was
+   * pending): a submitted message is the latest word of the human.
+   */
+  releaseMessages(ids: number[], batchId: number, now: string): void {
+    const copy = this.db.prepare(
+      `INSERT INTO messages (thread_id, author_kind, author_name, body, created_at, edited_at, pending, batch_id)
+       SELECT thread_id, author_kind, author_name, body, ?, edited_at, 0, ? FROM messages WHERE id = ?`,
+    );
+    const del = this.db.prepare('DELETE FROM messages WHERE id = ?');
+    for (const id of ids) {
+      copy.run(now, batchId, id);
+      del.run(id);
+    }
   }
 
   // ------------------------------------------------------------ batches
