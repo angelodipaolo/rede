@@ -60,6 +60,10 @@ interface RowProps {
   csv: boolean;
   total: number;
   open: number;
+  /** Pending messages (review in progress) on this file. */
+  pending: number;
+  /** Threads that have only pending messages (not sent at all yet). */
+  pendingOnly: number;
   unread: boolean;
   active: boolean;
   flash: boolean;
@@ -82,9 +86,14 @@ const FileRow = memo(function FileRow(p: RowProps) {
       <span class="tname">{p.name}</span>
       {p.csv && <span class="dot csv" title="Changed since you viewed it" />}
       {p.unread && <span class="dot unread" title="New agent reply" />}
-      {p.total > 0 && (
-        <span class={`tcount${p.open ? ' open' : ''}`} title={`${p.open} unresolved of ${p.total}`}>
-          {p.open || p.total}
+      {p.pending > 0 && (
+        <span class="tcount pending" title={`${p.pending} pending in your review (not sent yet)`}>
+          {p.pending}
+        </span>
+      )}
+      {p.total - p.pendingOnly > 0 && (
+        <span class={`tcount${p.open ? ' open' : ''}`} title={`${p.open} unresolved of ${p.total - p.pendingOnly} sent threads`}>
+          {p.open || p.total - p.pendingOnly}
         </span>
       )}
       <span class="tdelta">
@@ -146,12 +155,17 @@ export function Sidebar() {
 
   if (S.sidebarHidden) return null;
 
-  const counts = new Map<string, { total: number; open: number; unread: boolean }>();
+  const counts = new Map<string, { total: number; open: number; pending: number; pendingOnly: number; unread: boolean }>();
   for (const t of S.threads.values()) {
     if (!t.inScope) continue;
-    const c = counts.get(t.anchor.path) ?? { total: 0, open: 0, unread: false };
+    const c = counts.get(t.anchor.path) ?? { total: 0, open: 0, pending: 0, pendingOnly: 0, unread: false };
     c.total++;
-    if (!t.resolved) c.open++;
+    let p = 0;
+    for (const m of t.messages) if (m.pending) p++;
+    c.pending += p;
+    const onlyPending = p === t.messages.length;
+    if (onlyPending) c.pendingOnly++;
+    else if (!t.resolved) c.open++;
     if (S.unread.has(t.id)) c.unread = true;
     counts.set(t.anchor.path, c);
   }
@@ -194,6 +208,8 @@ export function Sidebar() {
           csv={f.changedSinceViewed}
           total={c?.total ?? 0}
           open={c?.open ?? 0}
+          pending={c?.pending ?? 0}
+          pendingOnly={c?.pendingOnly ?? 0}
           unread={c?.unread ?? false}
           active={i === activeIdx}
           flash={S.flash.has(f.path)}

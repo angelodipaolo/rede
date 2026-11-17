@@ -9,6 +9,7 @@ import {
   S,
   scrollToFile,
   setCollapsed,
+  setFinishOpen,
   setSidebar,
   setView,
   setViewed,
@@ -59,9 +60,10 @@ function moveThread(dir: 1 | -1) {
 export function installKeys(): () => void {
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      if (S.sheet || S.connect) {
+      if (S.sheet || S.connect || S.finish) {
         S.sheet = false;
         S.connect = false;
+        S.finish = false;
         emit('ui');
       }
       return;
@@ -116,6 +118,9 @@ export function installKeys(): () => void {
       case ']':
         S.panel = !S.panel;
         emit('ui', 'layout');
+        break;
+      case 'R':
+        setFinishOpen(!S.finish);
         break;
       case '?':
         S.sheet = !S.sheet;

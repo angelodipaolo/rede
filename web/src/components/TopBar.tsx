@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ReviewScope } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
-import { cycleTheme, S, setScope, setSidebar, setView, toggleWrap } from '../store.ts';
+import {
+  cycleTheme,
+  deleteMessage,
+  discardReview,
+  jumpToThread,
+  pendingList,
+  reviewNote,
+  S,
+  setFinishOpen,
+  setReviewNote,
+  setScope,
+  setSidebar,
+  setView,
+  submitReview,
+  threadLabel,
+  toggleWrap,
+} from '../store.ts';
 import { agentColorClass, copyText, relTime } from '../util.ts';
 import { Icon } from './Icon.tsx';
 
@@ -45,7 +61,8 @@ function ThreadCount() {
   let open = 0;
   let mine = 0;
   for (const t of S.threads.values()) {
-    if (t.resolved) continue;
+    // Threads not sent yet belong to the review in progress, not to the conversation.
+    if (t.resolved || t.messages.every((m) => m.pending)) continue;
     open++;
     if (t.messages[t.messages.length - 1]?.author.kind === 'agent') mine++;
   }
@@ -65,6 +82,139 @@ function ThreadCount() {
       </span>
       {unread > 0 && <span class="dot unread" />}
     </button>
+  );
+}
+
+function FinishReview() {
+  useTopics('pending', 'ui');
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!S.finish) return;
+    const onDoc = (e: MouseEvent) => {
+      // Confirm dialogs and clicks inside keep it open.
+      if (ref.current && !ref.current.contains(e.target as Node)) setFinishOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [S.finish]);
+  const n = S.pendingCount;
+  if (n === 0) return null;
+  return (
+    <div class="finish-wrap" ref={ref}>
+      <button
+        class={`tb-btn finish${S.finish ? ' on' : ''}`}
+        title="Finish your review: send all pending comments to the agent (Shift+R)"
+        aria-expanded={S.finish}
+        onClick={() => setFinishOpen(!S.finish)}
+      >
+        Finish review <span class="finish-n">{n}</span>
+      </button>
+      {S.finish && <FinishPanel />}
+    </div>
+  );
+}
+
+function FinishPanel() {
+  useTopics('threads', 'pending', 'agents');
+  const [note, setNote] = useState(reviewNote);
+  const [busy, setBusy] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => taRef.current?.focus(), []);
+  const items = pendingList();
+  const send = async (mode: 'discuss' | 'implement') => {
+    if (busy) return;
+    setBusy(true);
+    const ok = await submitReview(mode, note);
+    if (!ok) setBusy(false);
+  };
+  const n = S.pendingCount;
+  return (
+    <div
+      class="popover finish-pop"
+      role="dialog"
+      aria-label="Finish your review"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          void send(e.shiftKey ? 'implement' : 'discuss');
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          setFinishOpen(false);
+        }
+      }}
+    >
+      <div class="pop-h">
+        Finish your review <span class="muted">· {n} pending {n === 1 ? 'comment' : 'comments'}</span>
+      </div>
+      <ul class="pend-list">
+        {items.map(({ t, m }) => (
+          <li key={m.id}>
+            <button
+              class="pend-go"
+              title="Jump to this comment"
+              onClick={() => {
+                setFinishOpen(false);
+                jumpToThread(t.id);
+              }}
+            >
+              <span class="pend-loc">{threadLabel(t)}</span>
+              <span class="pend-txt">
+                {t.messages[0] !== m && <span class="pend-kind">reply · </span>}
+                {m.body.trim().split('\n')[0]}
+              </span>
+            </button>
+            <button
+              class="ib sm"
+              title="Remove from the review"
+              aria-label="Remove from the review"
+              onClick={() => {
+                if (confirm('Remove this pending comment from your review?')) void deleteMessage(t.id, m.id);
+              }}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <textarea
+        ref={taRef}
+        class="finish-note"
+        placeholder="Overall note to the agent (optional). Markdown works."
+        value={note}
+        disabled={busy}
+        onInput={(e) => {
+          const v = (e.target as HTMLTextAreaElement).value;
+          setNote(v);
+          setReviewNote(v);
+        }}
+      />
+      <div class="finish-acts">
+        <button class="mode-btn discuss" disabled={busy} onClick={() => void send('discuss')}>
+          <span class="mb-t">Discuss</span>
+          <span class="mb-s">Agent answers. No code changes.</span>
+          <kbd>⌘↵</kbd>
+        </button>
+        <button class="mode-btn implement" disabled={busy} onClick={() => void send('implement')}>
+          <span class="mb-t">Implement</span>
+          <span class="mb-s">Agent makes the changes, then reports.</span>
+          <kbd>⌘⇧↵</kbd>
+        </button>
+      </div>
+      <div class="finish-foot">
+        {S.agents.length === 0 ? <span class="muted">No agent connected. The review waits until one connects.</span> : <span />}
+        <span class="sp" />
+        <button
+          class="btn sm ghost danger"
+          disabled={busy}
+          onClick={() => {
+            if (confirm(`Discard your review? This deletes ${n} pending ${n === 1 ? 'comment' : 'comments'}.`)) void discardReview();
+          }}
+        >
+          Discard review
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -200,6 +350,7 @@ export function TopBar() {
       <Progress />
       <span class="sp" />
       <Conn />
+      <FinishReview />
       <ThreadCount />
       <Presence />
       <div class="seg icons" title="Split or unified (u)">

@@ -7,12 +7,16 @@ import {
   createThread,
   deleteMessage,
   editMessage,
+  hasPending,
+  latestBatchId,
   markRead,
   openComposer,
   reply,
   S,
+  sendHintVisible,
   setResolved,
   stashComposer,
+  type SendKind,
   takeFocusComposer,
   threadLabel,
   toggleResolvedOpen,
@@ -39,12 +43,17 @@ function MessageView({ m, thread }: { m: Message; thread: Thread }) {
   const editing = !!draft && !draft.hidden;
   const agent = m.author.kind === 'agent';
   return (
-    <div class={`msg ${agent ? 'msg-a ' + agentColorClass(m.author.name) : 'msg-h'}`}>
+    <div class={`msg ${agent ? 'msg-a ' + agentColorClass(m.author.name) : 'msg-h'}${m.pending ? ' msg-p' : ''}`}>
       <Avatar kind={m.author.kind} name={m.author.name} />
       <div class="msg-main">
         <div class="msg-head">
           <span class="who">{agent ? m.author.name : 'You'}</span>
           {agent && <span class="role">agent</span>}
+          {m.pending && (
+            <span class="badge pending" title="Pending: part of your review in progress. The agent gets it when you finish the review.">
+              Pending
+            </span>
+          )}
           <time title={new Date(m.createdAt).toLocaleString()}>{relTime(m.createdAt)}</time>
           {m.editedAt && <span class="edited">edited</span>}
           {!agent && !editing && (
@@ -58,9 +67,9 @@ function MessageView({ m, thread }: { m: Message; thread: Thread }) {
               </button>
               <button
                 class="ib sm"
-                title="Delete"
+                title={m.pending ? 'Remove from the review' : 'Delete'}
                 onClick={() => {
-                  if (confirm('Delete this message?')) void deleteMessage(thread.id, m.id);
+                  if (confirm(m.pending ? 'Remove this pending comment from your review?' : 'Delete this message?')) void deleteMessage(thread.id, m.id);
                 }}
               >
                 <Icon name="trash" size={14} />
@@ -92,7 +101,7 @@ function AgentStatus({ t }: { t: Thread }) {
     return (
       <div class="agst pending">
         <span class="pulse-dot" />
-        <span>Waiting for an agent</span>
+        <span>{hasPending(t) ? 'Your sent messages wait for an agent. The pending one goes with your review.' : 'Waiting for an agent'}</span>
         {none && (
           <span class="hint">
             · No agent connected.{' '}
@@ -112,6 +121,22 @@ function AgentStatus({ t }: { t: Thread }) {
     );
   }
   return null;
+}
+
+const MODE_TITLE = {
+  discuss: 'Sent in a Discuss review: the agent answers and does not change code.',
+  implement: 'Sent in an Implement review: the agent changes the code, then reports.',
+} as const;
+
+/** The mode of the latest human submission. Nothing for a one-off ("ask"). */
+export function ModeChip({ t }: { t: Thread }) {
+  if (t.mode === 'ask') return null;
+  const b = latestBatchId(t);
+  return (
+    <span class={`badge mode-${t.mode}`} title={`${b ? `Review #${b}. ` : ''}${MODE_TITLE[t.mode]}`}>
+      {t.mode === 'implement' ? 'Implement' : 'Discuss'}
+    </span>
+  );
 }
 
 export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
@@ -168,6 +193,7 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
         <span class="rl-txt">{first?.body.split('\n')[0]}</span>
         <span class="rl-n">
           {t.messages.length} {t.messages.length === 1 ? 'message' : 'messages'} · resolved
+          {hasPending(t) && <b class="rl-pending"> · pending reply</b>}
           {S.composers.has(`reply:${id}`) && <b class="rl-draft"> · draft reply</b>}
         </span>
       </div>
@@ -178,11 +204,18 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
   const replyDraft = S.composers.get(replyKey);
   const replying = !!replyDraft && !replyDraft.hidden;
   const needsMe = !t.resolved && lastMsg?.author.kind === 'agent';
+  const onlyPending = t.messages.every((m) => m.pending);
 
   return (
-    <div class={`thread${unread ? ' unread' : ''}${t.noteOnly ? ' note' : ''}${t.resolved ? ' is-resolved' : ''}`} data-thread={id} data-k={`t${id}`} ref={ref}>
+    <div
+      class={`thread${unread ? ' unread' : ''}${t.noteOnly ? ' note' : ''}${t.resolved ? ' is-resolved' : ''}${onlyPending ? ' pending-only' : ''}`}
+      data-thread={id}
+      data-k={`t${id}`}
+      ref={ref}
+    >
       <div class="th-head">
         <span class="th-ref">{lineRef}</span>
+        <ModeChip t={t} />
         {t.noteOnly && (
           <span class="badge note" title="Private note. Agents never see it.">
             <Icon name="note" size={12} /> Note
@@ -216,7 +249,8 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
         </pre>
       )}
       <div class="msgs">
-        {t.messages.map((m) => (
+        {/* Pending messages go to the end: that is where they land when the review is submitted. */}
+        {[...t.messages.filter((m) => !m.pending), ...t.messages.filter((m) => m.pending)].map((m) => (
           <MessageView key={m.id} m={m} thread={t} />
         ))}
       </div>
@@ -240,7 +274,7 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
 }
 
 export function Composer({ ck }: { ck: string }) {
-  useTopics('composers');
+  useTopics('composers', 'pending');
   const c = S.composers.get(ck);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [busy, setBusy] = useState(false);
@@ -263,18 +297,35 @@ export function Composer({ ck }: { ck: string }) {
   if (!c) return null;
   if (c.hidden) return <DraftChip ck={ck} label={c.kind === 'new' ? 'Draft comment' : 'Draft'} />;
 
-  const submit = async (mode: 'comment' | 'note' | 'resolve') => {
+  const submit = async (mode: SendKind | 'resolve') => {
     const body = (taRef.current?.value ?? text).trim();
     if (!body || busy) return;
     setBusy(true);
     let ok = false;
     c.text = body;
-    if (c.kind === 'new') ok = await createThread(c, mode === 'note');
-    else if (c.kind === 'reply') ok = await reply(c.threadId!, body, mode === 'resolve');
+    if (c.kind === 'new') ok = await createThread(c, mode === 'resolve' ? 'comment' : mode);
+    else if (c.kind === 'reply') ok = await reply(c.threadId!, body, { resolve: mode === 'resolve', pending: mode === 'review' });
     else if (c.kind === 'edit') ok = await editMessage(c.messageId!, body);
     setBusy(false);
     if (ok) closeComposer(ck);
   };
+
+  // A note thread is never sent, so its replies cannot join a review.
+  const thread = c.threadId !== undefined ? S.threads.get(c.threadId) : undefined;
+  const canReview = c.kind === 'new' || (c.kind === 'reply' && !thread?.noteOnly);
+  const inReview = S.pendingCount > 0;
+  // The primary action (⌘↵) follows the review in progress; ⌘⇧↵ is the other one.
+  const primary: SendKind = canReview && inReview ? 'review' : 'comment';
+  const secondary: SendKind | null = canReview ? (primary === 'review' ? 'comment' : 'review') : null;
+  const label = (k: SendKind) => (k === 'review' ? (inReview ? 'Add to review' : 'Start a review') : c.kind === 'reply' && !canReview ? 'Reply' : 'Comment');
+  const tip = (k: SendKind) =>
+    k === 'review'
+      ? 'Queue it as pending. The agent gets all pending comments together when you finish the review.'
+      : 'Send it now. The agent answers this one at once.';
+  const keyHint =
+    c.kind === 'edit'
+      ? '⌘↵ to save'
+      : `⌘↵ ${label(primary)}${secondary ? ` · ⌘⇧↵ ${label(secondary)}` : ''}`;
 
   const a = c.anchor;
   const title =
@@ -302,7 +353,7 @@ export function Composer({ ck }: { ck: string }) {
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            void submit('comment');
+            void submit(c.kind === 'edit' ? 'comment' : e.shiftKey && secondary ? secondary : primary);
           } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
@@ -311,7 +362,9 @@ export function Composer({ ck }: { ck: string }) {
         }}
       />
       <div class="cmp-bar">
-        <span class="cmp-hint">⌘↵ to {c.kind === 'edit' ? 'save' : c.kind === 'reply' ? 'reply' : 'comment'} · Esc closes and keeps the draft</span>
+        <span class="cmp-hint" title="Esc closes the composer and keeps the draft">
+          {keyHint} · Esc keeps the draft
+        </span>
         <span class="sp" />
         <button
           class="btn sm ghost"
@@ -331,10 +384,28 @@ export function Composer({ ck }: { ck: string }) {
             Reply &amp; resolve
           </button>
         )}
-        <button class="btn sm primary" onClick={() => void submit('comment')} disabled={busy || !text.trim()}>
-          {c.kind === 'edit' ? 'Save' : c.kind === 'reply' ? 'Reply' : 'Comment'}
-        </button>
+        {c.kind === 'edit' ? (
+          <button class="btn sm primary" onClick={() => void submit('comment')} disabled={busy || !text.trim()}>
+            Save
+          </button>
+        ) : (
+          <>
+            {secondary && (
+              <button class={`btn sm send-${secondary}`} title={tip(secondary)} onClick={() => void submit(secondary)} disabled={busy || !text.trim()}>
+                {label(secondary)}
+              </button>
+            )}
+            <button class={`btn sm primary send-${primary}`} title={tip(primary)} onClick={() => void submit(primary)} disabled={busy || !text.trim()}>
+              {label(primary)}
+            </button>
+          </>
+        )}
       </div>
+      {canReview && sendHintVisible() && (
+        <div class="cmp-explain">
+          <b>Comment</b>: the agent answers now · <b>Review</b>: queue comments, send them together
+        </div>
+      )}
     </div>
   );
 }

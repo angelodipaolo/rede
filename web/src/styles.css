@@ -46,6 +46,15 @@
   --ag-codex: #0d8466;
   --ag-other: #7356e8;
   --human: #5a6069;
+  /* Pending: comments queued in the review in progress (muted amber). */
+  --pend: #9a5c00;
+  --pend-bg: #fdf6e7;
+  --pend-line: #d9a54a;
+  --pend-strong: #c27a0e;
+  --on-pend: #ffffff;
+  /* Implement mode chip. */
+  --impl: #1b7d3a;
+  --impl-bg: #e5f4ea;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -85,6 +94,13 @@
     --ag-codex: #3ec79e;
     --ag-other: #a48eff;
     --human: #a1a7b0;
+    --pend: #f0b354;
+    --pend-bg: #221b10;
+    --pend-line: #8a6a2e;
+    --pend-strong: #e3a446;
+    --on-pend: #17130b;
+    --impl: #5ad081;
+    --impl-bg: #15291c;
   }
 }
 :root[data-theme='dark'] {
@@ -123,6 +139,13 @@
   --ag-codex: #3ec79e;
   --ag-other: #a48eff;
   --human: #a1a7b0;
+  --pend: #f0b354;
+  --pend-bg: #221b10;
+  --pend-line: #8a6a2e;
+  --pend-strong: #e3a446;
+  --on-pend: #17130b;
+  --impl: #5ad081;
+  --impl-bg: #15291c;
 }
 
 /* ------------------------------------------------------------ base */
@@ -1612,9 +1635,10 @@ kbd {
 .tabs button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 6px;
+  white-space: nowrap;
   border: 0;
   border-radius: 5px;
   background: none;
@@ -1795,6 +1819,272 @@ kbd {
 .keys dd {
   margin: 0;
   color: var(--text-2);
+}
+
+/* ------------------------------------------------------------ review in progress */
+.badge.pending {
+  background: transparent;
+  color: var(--pend);
+  border: 1px dashed var(--pend-line);
+  height: 18px;
+}
+.badge.mode-discuss {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.badge.mode-implement {
+  background: var(--impl-bg);
+  color: var(--impl);
+}
+.msg.msg-p {
+  border-left: 3px dashed var(--pend-line);
+  background: var(--pend-bg);
+}
+.thread.pending-only {
+  border: 1px dashed var(--pend-line);
+}
+.rl-pending {
+  color: var(--pend);
+  font-weight: 600;
+}
+.tcount.pending {
+  background: transparent;
+  border: 1px dashed var(--pend-line);
+  color: var(--pend);
+  line-height: 14px;
+  font-weight: 600;
+}
+.tc.pending {
+  color: var(--pend);
+  font-weight: 600;
+  border: 1px dashed var(--pend-line);
+  border-radius: 9px;
+  padding: 0 6px;
+  height: 18px;
+}
+.btn.send-review:not(.primary) {
+  color: var(--pend);
+  border-color: var(--pend-line);
+}
+.btn.send-review:not(.primary):hover:not(:disabled) {
+  background: var(--pend-bg);
+}
+.cmp-explain {
+  margin: 6px 2px 0;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.cmp-explain b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.finish-wrap {
+  position: relative;
+}
+.tb-btn.finish {
+  background: var(--pend-strong);
+  border-color: var(--pend-strong);
+  color: var(--on-pend);
+  font-weight: 600;
+}
+.tb-btn.finish:hover,
+.tb-btn.finish.on {
+  background: var(--pend-strong);
+  color: var(--on-pend);
+  filter: brightness(1.08);
+}
+.finish-n {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--on-pend) 22%, transparent);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+  text-align: center;
+}
+.finish-pop {
+  width: 460px;
+  max-width: calc(100vw - 24px);
+  padding: 12px 14px 10px;
+}
+.finish-pop .pop-h .muted {
+  font-weight: 400;
+}
+.pend-list {
+  list-style: none;
+  margin: 8px 0 10px;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px dashed var(--pend-line);
+  border-radius: 6px;
+  background: var(--pend-bg);
+}
+.pend-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+}
+.pend-list li + li {
+  border-top: 1px solid color-mix(in srgb, var(--pend-line) 35%, transparent);
+}
+.pend-go {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.pend-go:hover .pend-loc {
+  text-decoration: underline;
+}
+.pend-loc {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pend-txt {
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pend-kind {
+  color: var(--text-3);
+}
+.finish-note {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: var(--fs) / 1.5 var(--font-ui);
+  resize: vertical;
+  outline: none;
+}
+.finish-note:focus {
+  border-color: var(--accent);
+}
+.finish-acts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mode-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 9px 11px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.mode-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.mode-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.mode-btn .mb-t {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.mode-btn .mb-s {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.mode-btn kbd {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  font-size: 10px;
+}
+.mode-btn.implement {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.mode-btn.implement:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+.mode-btn.implement .mb-s {
+  color: color-mix(in srgb, var(--on-accent) 82%, transparent);
+}
+.mode-btn.implement kbd {
+  background: color-mix(in srgb, var(--on-accent) 18%, transparent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+.finish-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: var(--fs-xs);
+}
+.btn.danger {
+  color: var(--del-fg);
+}
+.pgroup {
+  padding: 8px 14px 7px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--fs-sm);
+}
+.pgroup.pending {
+  background: var(--pend-bg);
+}
+.pg-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pg-n {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.pg-note {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.pending-txt {
+  color: var(--pend);
+  font-weight: 500;
+}
+.tabs button.has-pending .n {
+  color: var(--pend);
+  font-weight: 600;
 }
 
 /* ------------------------------------------------------------ empty states */

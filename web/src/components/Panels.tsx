@@ -1,12 +1,24 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import type { Thread } from '../../../src/shared/types.ts';
+import type { ReviewBatch, Thread } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
-import { closeComposer, dismissToast, jumpToThread, pushToast, S, threadLabel, type ComposerState } from '../store.ts';
+import {
+  closeComposer,
+  dismissToast,
+  hasPending,
+  jumpToThread,
+  latestBatchId,
+  pendingIn,
+  pushToast,
+  S,
+  setFinishOpen,
+  threadLabel,
+  type ComposerState,
+} from '../store.ts';
 import { agentColorClass, copyText, relTime } from '../util.ts';
 import { Icon } from './Icon.tsx';
-import { Avatar, ThreadView } from './Thread.tsx';
+import { Avatar, ModeChip, ThreadView } from './Thread.tsx';
 
-type Filter = 'open' | 'attn' | 'resolved' | 'all';
+type Filter = 'open' | 'attn' | 'pending' | 'resolved' | 'all';
 
 const SCOPE_NAME = { all: 'All changes', staged: 'Staged', unstaged: 'Unstaged' } as const;
 
@@ -26,8 +38,95 @@ function needsMe(t: Thread) {
   return !t.resolved && t.messages[t.messages.length - 1]?.author.kind === 'agent';
 }
 
+const MODE_NAME = { discuss: 'Discuss', implement: 'Implement' } as const;
+
+/** Threads of a batch that got an agent message after the batch's last message. */
+function answered(b: ReviewBatch): number {
+  let n = 0;
+  for (const id of b.threadIds) {
+    const t = S.threads.get(id);
+    if (!t) continue;
+    let last = -1;
+    for (const m of t.messages) if (m.batchId === b.id) last = m.id;
+    if (t.messages.some((m) => m.author.kind === 'agent' && m.id > last)) n++;
+  }
+  return n;
+}
+
+type Group = { key: string; batch?: ReviewBatch; label?: string; threads: Thread[] };
+
+/** Review in progress first, then submitted reviews (newest first), then one-off comments. */
+function groupThreads(list: Thread[]): Group[] {
+  const pending: Thread[] = [];
+  const byBatch = new Map<number, Thread[]>();
+  const rest: Thread[] = [];
+  for (const t of list) {
+    if (hasPending(t)) {
+      pending.push(t);
+      continue;
+    }
+    const b = latestBatchId(t);
+    if (b !== null && S.batches.has(b)) {
+      if (!byBatch.has(b)) byBatch.set(b, []);
+      byBatch.get(b)!.push(t);
+    } else rest.push(t);
+  }
+  const out: Group[] = [];
+  if (pending.length) out.push({ key: 'pending', label: 'Review in progress', threads: pending });
+  for (const id of [...byBatch.keys()].sort((a, b) => b - a)) out.push({ key: `b${id}`, batch: S.batches.get(id)!, threads: byBatch.get(id)! });
+  if (rest.length) out.push({ key: 'rest', label: out.length ? 'Comments' : undefined, threads: rest });
+  return out;
+}
+
+function GroupHeader({ g }: { g: Group }) {
+  if (g.batch) {
+    const b = g.batch;
+    const total = b.threadIds.length;
+    return (
+      <div class={`pgroup mode-${b.mode}`}>
+        <div class="pg-top">
+          <b>Review #{b.id}</b>
+          <span class={`badge mode-${b.mode}`}>{MODE_NAME[b.mode]}</span>
+          <span class="pg-n">
+            {total} {total === 1 ? 'thread' : 'threads'} · {answered(b)} answered
+          </span>
+          <span class="sp" />
+          <span class="pg-n" title={new Date(b.submittedAt).toLocaleString()}>
+            {relTime(b.submittedAt)}
+          </span>
+        </div>
+        {b.body && <div class="pg-note">{b.body}</div>}
+      </div>
+    );
+  }
+  if (!g.label) return null;
+  if (g.key === 'pending') {
+    const n = g.threads.reduce((k, t) => k + pendingIn(t), 0);
+    return (
+      <div class="pgroup pending">
+        <div class="pg-top">
+          <b>{g.label}</b>
+          <span class="badge pending">{n} pending</span>
+          <span class="sp" />
+          <button class="link" onClick={() => setFinishOpen(true)}>
+            Finish review…
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div class="pgroup">
+      <div class="pg-top">
+        <b>{g.label}</b>
+        <span class="pg-n">one-off</span>
+      </div>
+    </div>
+  );
+}
+
 export function ThreadsPanel() {
-  useTopics('threads', 'ui', 'files');
+  useTopics('threads', 'ui', 'files', 'batches', 'pending');
   const [filter, setFilter] = useState<Filter>('open');
   if (!S.panel) return null;
   const order = new Map(S.files.map((f, i) => [f.path, i]));
@@ -39,18 +138,29 @@ export function ThreadsPanel() {
   const counts = {
     open: all.filter((t) => !t.resolved).length,
     attn: all.filter(needsMe).length,
+    pending: all.filter(hasPending).length,
     resolved: all.filter((t) => t.resolved).length,
     all: all.length,
   };
   const list = all.filter((t) =>
-    filter === 'open' ? !t.resolved : filter === 'attn' ? needsMe(t) : filter === 'resolved' ? t.resolved : true,
+    filter === 'open'
+      ? !t.resolved || hasPending(t)
+      : filter === 'attn'
+        ? needsMe(t)
+        : filter === 'pending'
+          ? hasPending(t)
+          : filter === 'resolved'
+            ? t.resolved
+            : true,
   );
   const tabs: [Filter, string][] = [
     ['open', 'Open'],
     ['attn', 'Needs me'],
+    ['pending', 'Pending'],
     ['resolved', 'Resolved'],
     ['all', 'All'],
   ];
+  const groups = groupThreads(list);
   return (
     <aside class="panel">
       <div class="panel-h">
@@ -69,7 +179,12 @@ export function ThreadsPanel() {
       </div>
       <div class="tabs">
         {tabs.map(([k, label]) => (
-          <button key={k} class={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>
+          <button
+            key={k}
+            class={`${filter === k ? 'on' : ''}${k === 'pending' && counts.pending ? ' has-pending' : ''}`}
+            title={k === 'pending' ? 'Your review in progress: comments not sent yet' : undefined}
+            onClick={() => setFilter(k)}
+          >
             {label}
             <span class="n">{counts[k]}</span>
           </button>
@@ -78,10 +193,14 @@ export function ThreadsPanel() {
       <div class="plist">
         {list.length === 0 && (
           <div class="empty-small">
-            {filter === 'attn' ? 'Nothing needs you. Agents have not replied to anything open.' : 'No threads here.'}
+            {filter === 'attn'
+              ? 'Nothing needs you. Agents have not replied to anything open.'
+              : filter === 'pending'
+                ? 'No review in progress. Use “Start a review” in a comment box to queue comments and send them together.'
+                : 'No threads here.'}
           </div>
         )}
-        {list.map((t) => {
+        {groups.map((g) => [<GroupHeader key={`h:${g.key}`} g={g} />, ...g.threads.map((t) => {
           const last = t.messages[t.messages.length - 1];
           const unread = S.unread.has(t.id);
           const offScope = !t.inScope;
@@ -90,6 +209,7 @@ export function ThreadsPanel() {
             <button key={t.id} class={`pitem${unread ? ' unread' : ''}${t.resolved ? ' resolved' : ''}`} onClick={() => jumpToThread(t.id)}>
               <div class="pi-top">
                 <span class="pi-loc" title={threadLabel(t)}>{shortLoc(threadLabel(t))}</span>
+                {!g.batch && <ModeChip t={t} />}
                 {offScope && <span class="badge scope">in {SCOPE_NAME[t.homeScope] ?? t.homeScope}</span>}
                 {(t.outdated || gone) && <span class="badge outdated">Outdated</span>}
                 {t.noteOnly && <span class="badge note">Note</span>}
@@ -105,7 +225,11 @@ export function ThreadsPanel() {
                 </div>
               )}
               <div class="pi-meta">
-                {t.agentState === 'working' && !t.resolved ? (
+                {hasPending(t) ? (
+                  <span class="pending-txt">
+                    {pendingIn(t)} pending · sent when you finish the review
+                  </span>
+                ) : t.agentState === 'working' && !t.resolved ? (
                   <span class="working-txt">{t.claimedBy ?? 'agent'} is working…</span>
                 ) : t.agentState === 'pending' && !t.resolved ? (
                   <span>Waiting for an agent</span>
@@ -121,7 +245,7 @@ export function ThreadsPanel() {
               </div>
             </button>
           );
-        })}
+        })])}
       </div>
     </aside>
   );
@@ -276,7 +400,9 @@ const KEYS: [string, string][] = [
   ['o', 'Collapse or expand the current file'],
   ['[', 'Toggle file tree'],
   [']', 'Toggle threads panel'],
-  ['⌘↵', 'Submit a comment'],
+  ['⌘↵', 'Send with the primary button (Comment, or Add to review during a review)'],
+  ['⌘⇧↵', 'Send with the other button'],
+  ['⇧R', 'Finish review (then ⌘↵ Discuss, ⌘⇧↵ Implement)'],
   ['Esc', 'Cancel / close'],
   ['?', 'This sheet'],
 ];

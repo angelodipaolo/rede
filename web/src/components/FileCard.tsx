@@ -304,7 +304,7 @@ function splitPath(p: string): [string, string] {
   return i < 0 ? ['', p] : [p.slice(0, i + 1), p.slice(i + 1)];
 }
 
-function FileHeader({ f, collapsed, sinceOn, unresolved, total }: { f: DiffFileMeta; collapsed: boolean; sinceOn: boolean; unresolved: number; total: number }) {
+function FileHeader({ f, collapsed, sinceOn, unresolved, total, pending }: { f: DiffFileMeta; collapsed: boolean; sinceOn: boolean; unresolved: number; total: number; pending: number }) {
   const [copied, setCopied] = useState(false);
   const [dir, base] = splitPath(f.path);
   const st = STATUS[f.status]!;
@@ -345,8 +345,13 @@ function FileHeader({ f, collapsed, sinceOn, unresolved, total }: { f: DiffFileM
         </span>
       )}
       <span class="sp" />
+      {pending > 0 && (
+        <span class="tc pending" title={`${pending} pending in your review (not sent yet)`}>
+          {pending} pending
+        </span>
+      )}
       {total > 0 && (
-        <span class={`tc${unresolved ? ' open' : ''}`} title={`${unresolved} unresolved of ${total} threads`}>
+        <span class={`tc${unresolved ? ' open' : ''}`} title={`${unresolved} unresolved of ${total} sent threads`}>
           <Icon name="comment" />
           {unresolved || total}
         </span>
@@ -418,7 +423,17 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
 
   const view = S.view;
   const wrap = S.wrap;
-  const unresolved = threads.filter((t) => !t.resolved).length;
+  let pendingMsgs = 0;
+  let sentThreads = 0;
+  let unresolved = 0;
+  for (const t of threads) {
+    let p = 0;
+    for (const m of t.messages) if (m.pending) p++;
+    pendingMsgs += p;
+    if (p === t.messages.length) continue; // not sent at all yet
+    sentThreads++;
+    if (!t.resolved) unresolved++;
+  }
 
   let body: preact.ComponentChildren = null;
   if (!collapsed && (f.binary || f.tooLarge)) {
@@ -566,7 +581,7 @@ export const FileCard = memo(function FileCard({ path }: { path: string }) {
 
   return (
     <section class={`card${collapsed ? ' collapsed' : ''}`} data-path={path} ref={cardRef}>
-      <FileHeader f={f} collapsed={collapsed} sinceOn={sinceOn} unresolved={unresolved} total={threads.length} />
+      <FileHeader f={f} collapsed={collapsed} sinceOn={sinceOn} unresolved={unresolved} total={sentThreads} pending={pendingMsgs} />
       {since?.state === 'loading' && <div class="since-bar">Loading changes since viewed…</div>}
       {body}
     </section>

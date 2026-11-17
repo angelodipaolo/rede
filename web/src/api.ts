@@ -4,10 +4,12 @@ import type {
   DiffFile,
   FileContent,
   Review,
+  ReviewBatch,
   ReviewScope,
   ReviewSummary,
   Side,
   SinceViewed,
+  SubmitReviewRequest,
   Thread,
   UpdateThreadRequest,
 } from '../../src/shared/types.ts';
@@ -65,5 +67,7 @@ export const api = {
     call<Thread>('PATCH', `/api/messages/${mid}?${sc(scope)}`, { body }),
   deleteMessage: (mid: number, scope: ReviewScope) =>
     call<Thread | { ok: true; threadDeleted: true }>('DELETE', `/api/messages/${mid}?${sc(scope)}`),
+  submitReview: (id: string, req: SubmitReviewRequest) => call<ReviewBatch>('POST', `/api/reviews/${enc(id)}/submit`, req),
+  discardPending: (id: string) => call<{ ok: true }>('DELETE', `/api/reviews/${enc(id)}/pending`),
   eventsUrl: (id: string, scope: ReviewScope) => `/api/reviews/${enc(id)}/events?${sc(scope)}`,
 };

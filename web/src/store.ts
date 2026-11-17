@@ -3,7 +3,9 @@ import type {
   Anchor,
   DiffFile,
   DiffFileMeta,
+  Message,
   Review,
+  ReviewBatch,
   ReviewScope,
   ServerEvent,
   Side,
@@ -128,6 +130,12 @@ export const S = {
   sidebarHidden: lsGet('margin:sidebar:hidden') === '1',
   filter: '',
   scroller: null as HTMLElement | null,
+  /** Pending messages in the review in progress (server side; survives reload). */
+  pendingCount: 0,
+  /** Submitted review batches by id. */
+  batches: new Map<number, ReviewBatch>(),
+  /** The Finish review popover is open. */
+  finish: false,
 };
 
 const fk = (path: string, scope: ReviewScope = S.scope) => `${scope}|${path}`;
@@ -442,6 +450,8 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
   S.files = files;
   S.fileByPath = byPath;
   S.agents = next.agents;
+  S.pendingCount = next.pendingCount ?? 0;
+  S.batches = new Map((next.batches ?? []).map((b) => [b.id, b]));
 
   // Threads.
   const seen = new Set<number>();
@@ -465,7 +475,7 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
       emit(fileTopic(p), 'tree');
     }, 2400);
   }
-  emit(...changedTopics, 'review', 'threads', 'agents', 'progress', 'tree', 'ui', 'vspace');
+  emit(...changedTopics, 'review', 'threads', 'agents', 'progress', 'tree', 'ui', 'vspace', 'pending', 'batches');
   if (listChanged) emit('files');
 }
 
@@ -626,7 +636,119 @@ function handleEvent(ev: ServerEvent) {
       S.agents = ev.agents;
       emit('agents');
       break;
+    case 'batch':
+      S.batches.set(ev.batch.id, ev.batch);
+      setPendingCount(ev.pendingCount);
+      emit('batches', 'threads');
+      break;
+    case 'pending':
+      setPendingCount(ev.pendingCount);
+      break;
   }
+}
+
+// ------------------------------------------------------------------ review in progress
+
+function setPendingCount(n: number) {
+  if (S.pendingCount === n) return;
+  S.pendingCount = n;
+  emit('pending');
+  if (n === 0 && S.finish) {
+    S.finish = false;
+    emit('ui');
+  }
+}
+
+/** Recounts pending messages from the threads, after a local change. Events confirm it later. */
+function recountPending() {
+  let n = 0;
+  for (const t of S.threads.values()) for (const m of t.messages) if (m.pending) n++;
+  setPendingCount(n);
+}
+
+export const hasPending = (t: Thread) => t.messages.some((m) => m.pending);
+export const pendingIn = (t: Thread) => t.messages.reduce((n, m) => n + (m.pending ? 1 : 0), 0);
+
+/** The batch of the latest submitted human message; null for a one-off or none. */
+export function latestBatchId(t: Thread): number | null {
+  for (let i = t.messages.length - 1; i >= 0; i--) {
+    const m = t.messages[i]!;
+    if (m.pending || m.author.kind !== 'human') continue;
+    return m.batchId;
+  }
+  return null;
+}
+
+/** Pending messages of the review in progress, in diff order. */
+export function pendingList(): { t: Thread; m: Message }[] {
+  const order = new Map(S.files.map((f, i) => [f.path, i]));
+  const out: { t: Thread; m: Message }[] = [];
+  for (const t of S.threads.values()) for (const m of t.messages) if (m.pending) out.push({ t, m });
+  return out.sort(
+    (a, b) =>
+      (order.get(a.t.anchor.path) ?? 1e9) - (order.get(b.t.anchor.path) ?? 1e9) ||
+      a.t.anchor.path.localeCompare(b.t.anchor.path) ||
+      (a.t.anchor.endLine ?? 0) - (b.t.anchor.endLine ?? 0) ||
+      a.m.id - b.m.id,
+  );
+}
+
+export function setFinishOpen(open: boolean) {
+  if (open && S.pendingCount === 0) return;
+  if (S.finish === open) return;
+  S.finish = open;
+  if (open) S.connect = false;
+  emit('ui');
+}
+
+const MODE_LABEL = { discuss: 'Discuss', implement: 'Implement' } as const;
+
+export async function submitReview(mode: 'discuss' | 'implement', body: string): Promise<boolean> {
+  const n = S.pendingCount;
+  const b = await guard(api.submitReview(S.reviewId, { mode, body }), 'Submit review');
+  if (!b) return false;
+  S.batches.set(b.id, b);
+  setReviewNote('');
+  setFinishOpen(false);
+  setPendingCount(0);
+  emit('batches', 'threads');
+  const none = S.agents.length === 0 ? ' No agent is connected: it waits until one connects.' : '';
+  pushToast({ kind: 'info', text: `Review sent to agent (${MODE_LABEL[mode]}, ${n} comment${n === 1 ? '' : 's'}).${none}` });
+  return true;
+}
+
+export async function discardReview(): Promise<void> {
+  const ok = await guard(api.discardPending(S.reviewId), 'Discard review');
+  if (!ok) return;
+  setReviewNote('');
+  setFinishOpen(false);
+  // The server sends the deletions as events too; apply them now.
+  preserveScroll(() => {
+    for (const t of [...S.threads.values()]) {
+      if (!hasPending(t)) continue;
+      const rest = t.messages.filter((m) => !m.pending);
+      if (!rest.length) removeThread(t.id);
+      else upsertThread({ ...t, messages: rest }, { quiet: true, reindex: true });
+    }
+  });
+  setPendingCount(0);
+  pushToast({ kind: 'info', text: 'Review discarded.' });
+}
+
+/** The overall note of the review in progress: a local draft until the review is submitted. */
+export function reviewNote(): string {
+  return lsGet(`margin:reviewnote:${S.reviewId}`) ?? '';
+}
+export function setReviewNote(v: string) {
+  lsSet(`margin:reviewnote:${S.reviewId}`, v.trim() ? v : null);
+}
+
+/** The "Comment vs Review" hint under composers shows for the first few sends. */
+export function sendHintVisible(): boolean {
+  return Number(lsGet('margin:sendhint') ?? 0) < 5;
+}
+function countSend() {
+  lsSet('margin:sendhint', String(Number(lsGet('margin:sendhint') ?? 0) + 1));
 }
 
 // ------------------------------------------------------------------ threads
@@ -660,7 +782,10 @@ export function upsertThread(t: Thread, opts: { quiet: boolean; reindex: boolean
   }
   if (prev && prev.anchor.path !== t.anchor.path) emit(fileTopic(prev.anchor.path));
   emit(fileTopic(t.anchor.path), `t:${t.id}`, 'threads', 'tree');
-  if (opts.reindex) indexThreads();
+  if (opts.reindex) {
+    indexThreads();
+    recountPending();
+  }
 }
 
 function removeThread(id: number) {
@@ -669,6 +794,7 @@ function removeThread(id: number) {
   S.threads.delete(id);
   S.unread.delete(id);
   indexThreads();
+  recountPending();
   emit(fileTopic(t.anchor.path), 'threads', 'tree');
 }
 
@@ -695,20 +821,32 @@ async function guard<T>(p: Promise<T>, what: string): Promise<T | null> {
   }
 }
 
-export async function createThread(c: ComposerState, noteOnly: boolean): Promise<boolean> {
+/**
+ * - comment: a one-off, sent to the agent now.
+ * - review: queued as pending in the review in progress.
+ * - note: a private note, never sent.
+ */
+export type SendKind = 'comment' | 'review' | 'note';
+
+export async function createThread(c: ComposerState, kind: SendKind): Promise<boolean> {
   if (!c.anchor) return false;
   const t = await guard(
-    api.createThread(S.reviewId, c.scope, { anchor: c.anchor, body: c.text, author: HUMAN, noteOnly }),
-    'Comment',
+    api.createThread(S.reviewId, c.scope, { anchor: c.anchor, body: c.text, author: HUMAN, noteOnly: kind === 'note', pending: kind === 'review' }),
+    kind === 'review' ? 'Add to review' : 'Comment',
   );
   if (!t) return false;
+  if (kind !== 'note') countSend();
   preserveScroll(() => upsertThread(t, { quiet: true, reindex: true }));
   return true;
 }
 
-export async function reply(tid: number, body: string, resolve = false): Promise<boolean> {
-  const t = await guard(api.addMessage(tid, S.scope, { body, author: HUMAN, resolve }), 'Reply');
+export async function reply(tid: number, body: string, opts: { resolve?: boolean; pending?: boolean } = {}): Promise<boolean> {
+  const t = await guard(
+    api.addMessage(tid, S.scope, { body, author: HUMAN, resolve: !!opts.resolve, pending: !!opts.pending }),
+    opts.pending ? 'Add to review' : 'Reply',
+  );
   if (!t) return false;
+  countSend();
   markRead(tid);
   preserveScroll(() => upsertThread(t, { quiet: true, reindex: true }));
   return true;
