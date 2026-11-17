@@ -5,6 +5,7 @@ import {
   cycleTheme,
   deleteMessage,
   discardReview,
+  historyHref,
   jumpToThread,
   pendingList,
   reviewNote,
@@ -202,7 +203,13 @@ function FinishPanel() {
         </button>
       </div>
       <div class="finish-foot">
-        {S.agents.length === 0 ? <span class="muted">No agent connected. The review waits until one connects.</span> : <span />}
+        {S.agents.length === 0 ? (
+          <span class="muted">
+            No agent connected. After you send it, tell your agent: <q>Address the Margin feedback.</q>
+          </span>
+        ) : (
+          <span />
+        )}
         <span class="sp" />
         <button
           class="btn sm ghost danger"
@@ -304,14 +311,17 @@ function ConnectPopover() {
           ))}
         </ul>
       ) : (
-        <p class="muted small">No agent is connected. Comments wait until one connects.</p>
+        <p class="muted small">No agent is connected. Your feedback waits here until an agent reads it.</p>
       )}
       <p class="small">
-        Start Claude Code or Codex in this repo and paste this prompt. The agent waits for your comments and answers them in the threads.
+        When you finish a review, tell Claude Code or Codex in this repo:
       </p>
-      <CopyBox text="Run `margin guide` and follow it." />
+      <CopyBox text="Address the Margin feedback." />
+      <p class="small muted">It reads your feedback, answers or changes the code, replies in each thread, and stops.</p>
+      <p class="small">To have it answer each comment while you review:</p>
+      <CopyBox text="Watch Margin and answer my comments live." />
       <p class="small muted">
-        To install the skill so the agent knows Margin without a prompt, run <code>margin setup</code> once.
+        These prompts use the Margin skill. Install it once (run it again after you update Margin):
       </p>
       <CopyBox text="margin setup" />
     </div>
@@ -353,6 +363,9 @@ export function TopBar() {
       <FinishReview />
       <ThreadCount />
       <Presence />
+      <a class="ib" href={historyHref()} title="History of past reviews (h)" aria-label="History">
+        <Icon name="history" />
+      </a>
       <div class="seg icons" title="Split or unified (u)">
         <button class={S.view === 'split' ? 'on' : ''} onClick={() => setView('split')} title="Split view">
           <Icon name="split" />

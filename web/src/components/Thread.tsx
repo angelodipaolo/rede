@@ -24,6 +24,7 @@ import {
 } from '../store.ts';
 import { agentColorClass, relTime } from '../util.ts';
 import { Icon } from './Icon.tsx';
+import { OriginalCode, OutdatedNote } from './Original.tsx';
 
 export function Avatar({ kind, name }: { kind: 'human' | 'agent'; name: string }) {
   if (kind === 'human') return <span class="av av-h">{(name[0] ?? 'y').toUpperCase()}</span>;
@@ -104,16 +105,17 @@ function AgentStatus({ t }: { t: Thread }) {
         <span>{hasPending(t) ? 'Your sent messages wait for an agent. The pending one goes with your review.' : 'Waiting for an agent'}</span>
         {none && (
           <span class="hint">
-            · No agent connected.{' '}
+            · tell your agent: <q>address margin feedback</q>{' '}
             <button
               class="link"
+              title="Prompts and setup"
               onClick={(e) => {
                 e.stopPropagation();
                 S.connect = true;
                 emit('ui');
               }}
             >
-              Connect one
+              How?
             </button>
           </span>
         )}
@@ -221,7 +223,11 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
             <Icon name="note" size={12} /> Note
           </span>
         )}
-        {t.outdated && <span class="badge outdated">Outdated</span>}
+        {t.outdated && (
+          <span class="badge outdated" title={t.outdatedReason === 'file-gone' ? 'The file is no longer in this diff' : 'The code this comment was written on has changed'}>
+            {t.outdatedReason === 'file-gone' ? 'File not in diff' : 'Outdated'}
+          </span>
+        )}
         {pinned && !t.outdated && a.startLine !== null && <span class="badge">Not in visible diff</span>}
         {unread && <span class="badge new">New reply</span>}
         {needsMe && !unread && <span class="badge attn">Your turn</span>}
@@ -242,11 +248,19 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
           </button>
         )}
       </div>
-      {(pinned || t.outdated) && t.snippet.length > 0 && (
-        <pre class="snippet">
-          {t.snippet.slice(0, 12).join('\n')}
-          {t.snippet.length > 12 ? '\n…' : ''}
-        </pre>
+      {t.outdated ? (
+        <>
+          <OutdatedNote t={t} />
+          <OriginalCode t={t} />
+        </>
+      ) : (
+        pinned &&
+        t.snippet.length > 0 && (
+          <pre class="snippet">
+            {t.snippet.slice(0, 12).join('\n')}
+            {t.snippet.length > 12 ? '\n…' : ''}
+          </pre>
+        )
       )}
       <div class="msgs">
         {/* Pending messages go to the end: that is where they land when the review is submitted. */}

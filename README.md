@@ -35,7 +35,7 @@ The review opens at `http://127.0.0.1:<port>/r/<review-id>`. The diff refreshes
 live while files change, so you can review while an agent keeps writing code.
 Uncommitted reviews have three views: all changes, staged, and unstaged.
 
-Other commands: `margin status`, `margin list`, `margin stop`.
+Other commands: `margin status`, `margin list`, `margin stop`, `margin export`.
 
 ### Comments and reviews
 
@@ -66,30 +66,43 @@ margin setup        # install the Margin skill for Claude Code and Codex, and th
 `setup` writes `~/.claude/skills/margin/SKILL.md`,
 `~/.codex/skills/margin/SKILL.md` and `~/.codex/rules/margin.rules` (it
 respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`), and prints each file it changed.
-It is safe to run again. Then tell the agent "connect to margin" (or use `/margin` in
-Claude Code). The skill only tells the agent to run `margin guide`, which
-prints the instructions of the installed Margin build, so the skill does not
-go stale when Margin changes. You can also paste the guide into any agent.
+It is safe to run again, and you should run it again after you update Margin
+(the Codex rule lists the margin subcommands; see Codex below). The skill only
+tells the agent to run `margin guide`, which prints the instructions of the
+installed Margin build, so the skill does not go stale when Margin changes.
+You can also paste the guide into any agent.
 
-The agent loop:
+The usual flow is one pass. The agent finishes its work, you review the diff
+in Margin and finish your review, then you go back to the agent and say:
+
+> Address the Margin feedback.
+
+The agent reads what waits for it, answers or changes code as each thread's
+mode says, replies in every thread, checks once more for feedback that came in
+meanwhile, then stops and gives you a short summary in the chat:
 
 ```sh
-margin wait                      # blocks until you comment; no tokens used while it waits
+margin inbox                     # prints the waiting feedback; never blocks
 margin reply 12 <<'EOF'          # answer thread 12 (markdown on stdin)
-The cache is invalidated in `src/cache.ts:88`, ...
+Renamed it to `retryCount` in `src/cache.ts:88`.
 EOF
-margin wait                      # and again, until you say stop
+margin inbox                     # once more; "No feedback is waiting." -> stop
 ```
+
+To have the agent answer each comment while you review, say "Watch Margin
+and answer my comments live." Then it loops on `margin wait`, which blocks
+until you comment and uses no tokens while it waits, until you tell it to stop.
 
 Agent commands:
 
 | Command | What it does |
 | --- | --- |
-| `margin wait [--timeout <sec>]` | Long poll. Prints new threads with diff context and the conversation. Default timeout 100 s. |
+| `margin inbox` | Prints the feedback waiting now, in the same format as `wait`, and claims it the same way. Never blocks. Prints "No feedback is waiting." when there is none. |
+| `margin wait [--timeout <sec>]` | Long poll (watch mode). Prints new threads with diff context and the conversation. Default timeout 100 s. |
 | `margin reply <id> [-m <text>] [--resolve]` | Reply. Reads stdin when `-m` is absent. Never resolves unless `--resolve`. |
 | `margin comment <path>[:<line>[-<end>]] [--old] [--staged\|--unstaged]` | Start a thread (review findings). Without a line: a file-level thread. |
 | `margin diff [--stat] [--staged\|--unstaged]` | Print the exact diff the reviewer sees. |
-| `margin threads [--all\|--pending]`, `margin show <id>` | Read threads. |
+| `margin threads [--all\|--pending]`, `margin show <id>` | Read threads, old ones too. `show` prints the original code of an outdated thread. |
 | `margin resolve <id>`, `margin release` | Resolve a thread; give back claimed threads. |
 
 All agent commands take `--as <name>` (default: `$MARGIN_AGENT`, else `claude`
@@ -97,12 +110,12 @@ inside Claude Code, `codex` inside Codex, else `agent`), `--review <id>`
 (default: every review for `wait` and `threads`, the most recently opened review
 for `comment` and `diff`), and `--json`.
 
-`wait` prints each submitted review under a `REVIEW #n · DISCUSS|IMPLEMENT`
+`inbox` and `wait` print each submitted review under a `REVIEW #n · DISCUSS|IMPLEMENT`
 header with your overall note and the instruction for the mode, then its
 threads; one-off threads follow under their own header. Every thread states its
-mode. All threads of one review always go to one agent in one `wait`.
+mode. All threads of one review always go to one agent in one `inbox` or `wait`.
 
-When `wait` hands a thread to an agent, the thread shows as "working" for that
+When `inbox` or `wait` hands a thread to an agent, the thread shows as "working" for that
 agent. If the agent does not reply within 15 minutes, or runs `margin release`,
 the thread goes back to "pending". A new message from you on a working thread
 is delivered again to the same agent.
@@ -120,7 +133,7 @@ Instead, `margin setup` writes this Codex rule to
 
 ```python
 prefix_rule(
-    pattern = ["margin", ["wait", "reply", "comment", "threads", "show", "diff", "release", "resolve", "status", "list", "guide"]],
+    pattern = ["margin", ["inbox", "wait", "reply", "comment", "threads", "show", "diff", "release", "resolve", "status", "list", "guide"]],
     decision = "allow",
     justification = "...",
 )
@@ -132,6 +145,11 @@ a prompt, also in `codex exec` (approval policy `never`). Only the margin agent
 commands match, and only the `margin` executables that were on `PATH` when you
 ran `setup` (a script named `margin` in the workspace does not). Start a new
 Codex session after `setup`. Delete the file to undo.
+
+The rule lists the subcommands by name. When a Margin update adds one (this
+release adds `inbox`), run `margin setup` again: it rewrites the rule and
+prints `updated` for it. Until then Codex runs `margin inbox` in the sandbox,
+where it fails and says that the rule is older than Margin.
 
 Codex applies rules only to plain commands. A pipe, `&&`, redirection,
 heredoc, `VAR=value` prefix or quote escape such as `'\''` makes the command
@@ -149,13 +167,40 @@ Without the rule file, the fix line says to rerun the command with escalated
 permissions (interactive `codex` asks you), or to run `margin setup`. In
 `codex exec` the approval policy is `never`, so there the rule is required.
 
+## History
+
+Every thread and submitted review is kept. Nothing is deleted automatically.
+
+- **Code snapshot.** When a thread starts, Margin stores the diff lines around
+  it (the commented lines and 6 lines before and after, with old and new line
+  numbers), and the commit and branch checked out then. A submitted review
+  stores the commit and branch too.
+- **Outdated threads.** When the commented code changes, the thread is marked
+  "Outdated: code changed"; when its file leaves the diff, "File no longer in
+  this diff". It shows the original code as a small diff.
+- **The live-view rule.** The diff view shows threads on current code, and
+  outdated threads that are still open. A thread that is resolved *and*
+  outdated is finished: it leaves the diff view and stays in History. The end
+  of the diff and the threads panel show "N older threads in History". A reply
+  (it reopens the thread) or the code coming back returns it to the diff view.
+- **History view.** `/history` (the clock icon in the top bar, key `h`, or the
+  start page) lists all submitted reviews and one-off threads of the
+  repository, newest first, grouped by day. Search the comments and file
+  paths, and filter by review, state and mode. Each thread shows its original
+  code and the whole conversation. "Open in diff" jumps to it when the current
+  diff still shows it; else you can still reply and resolve it there. "Copy as
+  Markdown" copies one entry.
+- **Export.** `margin export [--review <id>] [--since <date>] [-o <file>]`
+  writes the history as Markdown, oldest first.
+
 ## Storage
 
 Margin keeps its data in `.git/margin/` of each repository (for a linked
 worktree: in that worktree's git directory). It is never committed.
 
-- `margin.db`: reviews, threads, messages, submitted review batches, viewed
-  state (SQLite, built into Node). Older databases are upgraded in place.
+- `margin.db`: reviews, threads with their code snapshots, messages,
+  submitted review batches, viewed state (SQLite, built into Node). Older
+  databases are upgraded in place (columns are added; no row changes).
 - `server.json`: pid, port and build of the running server. A strictly newer
   `margin` (higher version, or same version and a newer bundle) replaces an
   older running server on the same port. An older `margin` uses the newer

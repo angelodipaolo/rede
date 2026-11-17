@@ -10,6 +10,7 @@ import {
   scrollToFile,
   setCollapsed,
   setFinishOpen,
+  historyHref,
   setSidebar,
   setView,
   setViewed,
@@ -121,6 +122,9 @@ export function installKeys(): () => void {
         break;
       case 'R':
         setFinishOpen(!S.finish);
+        break;
+      case 'h':
+        location.href = historyHref();
         break;
       case '?':
         S.sheet = !S.sheet;

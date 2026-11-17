@@ -8,7 +8,8 @@ import { init, S } from '../store.ts';
 import { captureReading, correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
 import { relTime } from '../util.ts';
 import { FileCard, updateAllOverflow } from './FileCard.tsx';
-import { OrphanDrafts, OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
+import { ArchivedLink, OrphanDrafts, OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
+import { Icon } from './Icon.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { TopBar } from './TopBar.tsx';
 
@@ -116,6 +117,9 @@ function DiffColumn() {
           <OutdatedSection />
           <OrphanDrafts />
           {S.files.length > 0 && <div class="tail">End of diff · {S.files.length} files</div>}
+          <div class="tail-arch">
+            <ArchivedLink tail />
+          </div>
         </>
       )}
     </main>
@@ -152,11 +156,7 @@ export function ReviewList() {
   useEffect(() => {
     api
       .reviews()
-      .then((l) => {
-        const sorted = [...l].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-        if (sorted.length === 1) location.replace(`/r/${encodeURIComponent(sorted[0]!.id)}`);
-        else setList(sorted);
-      })
+      .then((l) => setList([...l].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))))
       .catch((e: Error) => setErr(e.message));
   }, []);
   return (
@@ -170,6 +170,14 @@ export function ReviewList() {
       )}
       {list && list.length > 0 && (
         <ul>
+          <li>
+            <a href="/history" class="rl-hist">
+              <span class="rl-title">
+                <Icon name="history" size={15} /> History
+              </span>
+              <span class="muted">Past reviews and threads of this repository, with the code they were about</span>
+            </a>
+          </li>
           {list.map((r) => (
             <li key={r.id}>
               <a href={`/r/${encodeURIComponent(r.id)}`}>

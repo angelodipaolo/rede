@@ -5,6 +5,7 @@ import {
   closeComposer,
   dismissToast,
   hasPending,
+  historyHref,
   jumpToThread,
   latestBatchId,
   pendingIn,
@@ -191,6 +192,7 @@ export function ThreadsPanel() {
         ))}
       </div>
       <div class="plist">
+        <ArchivedLink />
         {list.length === 0 && (
           <div class="empty-small">
             {filter === 'attn'
@@ -251,6 +253,23 @@ export function ThreadsPanel() {
   );
 }
 
+/** The live-view rule, made visible: how many older threads of this review are in History. */
+export function ArchivedLink({ tail }: { tail?: boolean }) {
+  useTopics('archived', 'review');
+  const n = S.archivedCount;
+  if (!n) return null;
+  return (
+    <a
+      class={tail ? 'arch-link tail-link' : 'arch-link'}
+      href={historyHref()}
+      title="Resolved threads whose code changed or left the diff move to History. Nothing is deleted."
+    >
+      <Icon name="history" size={14} />
+      {n} older {n === 1 ? 'thread' : 'threads'} in History
+    </a>
+  );
+}
+
 export function OutdatedSection() {
   useTopics('threads', 'files');
   const [open, setOpen] = useState(false);
@@ -265,7 +284,7 @@ export function OutdatedSection() {
         </button>
         <span class="badge outdated">Outdated</span>
         <span class="fpath">
-          {list.length} {list.length === 1 ? 'thread' : 'threads'} on files no longer in this diff
+          File no longer in this diff · {list.length} {list.length === 1 ? 'thread' : 'threads'}
           {unresolved > 0 && <span class="muted"> · {unresolved} unresolved</span>}
         </span>
       </div>
@@ -365,13 +384,15 @@ export function Toasts() {
           key={t.id}
           class={`toast ${t.kind}${t.agent ? ' ' + agentColorClass(t.agent) : ''}`}
           onClick={() => {
-            if (t.threadId !== undefined) jumpToThread(t.threadId);
+            if (t.href) location.href = t.href;
+            else if (t.threadId !== undefined) jumpToThread(t.threadId);
             dismissToast(t.id);
           }}
         >
           {t.kind === 'agent' && <Avatar kind="agent" name={t.agent ?? 'agent'} />}
           <span class="toast-txt">{t.text}</span>
-          {t.threadId !== undefined && <button class="toast-go">Jump</button>}
+          {t.threadId !== undefined && !t.href && <button class="toast-go">Jump</button>}
+          {t.href && <button class="toast-go">History</button>}
           <button
             class="ib sm"
             aria-label="Dismiss"
@@ -404,6 +425,7 @@ const KEYS: [string, string][] = [
   ['⌘⇧↵', 'Send with the other button'],
   ['⇧R', 'Finish review (then ⌘↵ Discuss, ⌘⇧↵ Implement)'],
   ['Esc', 'Cancel / close'],
+  ['h', 'History of past reviews'],
   ['?', 'This sheet'],
 ];
 

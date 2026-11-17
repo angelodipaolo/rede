@@ -3,6 +3,8 @@ import type {
   CreateThreadRequest,
   DiffFile,
   FileContent,
+  Health,
+  HistoryPage,
   Review,
   ReviewBatch,
   ReviewScope,
@@ -70,4 +72,10 @@ export const api = {
   submitReview: (id: string, req: SubmitReviewRequest) => call<ReviewBatch>('POST', `/api/reviews/${enc(id)}/submit`, req),
   discardPending: (id: string) => call<{ ok: true }>('DELETE', `/api/reviews/${enc(id)}/pending`),
   eventsUrl: (id: string, scope: ReviewScope) => `/api/reviews/${enc(id)}/events?${sc(scope)}`,
+  health: () => call<Health>('GET', '/api/health'),
+  history: (q: { q?: string; review?: string; state?: string; mode?: string; before?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '' && v !== null) p.set(k, String(v));
+    return call<HistoryPage>('GET', `/api/history?${p}`);
+  },
 };

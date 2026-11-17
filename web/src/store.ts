@@ -64,6 +64,8 @@ export interface Toast {
   kind: 'agent' | 'error' | 'info';
   threadId?: number;
   agent?: string;
+  /** Opens this link on click (instead of jumping to a thread). */
+  href?: string;
 }
 
 export interface Selection {
@@ -136,7 +138,14 @@ export const S = {
   batches: new Map<number, ReviewBatch>(),
   /** The Finish review popover is open. */
   finish: false,
+  /** Threads of this review that live only in History (resolved and outdated). */
+  archivedCount: 0,
 };
+
+/** Link to History, remembering the review to come back to. */
+export function historyHref(): string {
+  return S.reviewId ? `/history?from=${encodeURIComponent(S.reviewId)}` : '/history';
+}
 
 const fk = (path: string, scope: ReviewScope = S.scope) => `${scope}|${path}`;
 export const fileTopic = (path: string) => `f:${path}`;
@@ -452,10 +461,12 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
   S.agents = next.agents;
   S.pendingCount = next.pendingCount ?? 0;
   S.batches = new Map((next.batches ?? []).map((b) => [b.id, b]));
+  S.archivedCount = next.archivedCount ?? 0;
 
   // Threads.
   const seen = new Set<number>();
   for (const t of next.threads) {
+    if (t.archived) continue;
     seen.add(t.id);
     upsertThread(t, { quiet: opts.initial, reindex: false });
   }
@@ -475,7 +486,7 @@ function applyReview(next: Review, opts: { initial: boolean; flash: boolean }) {
       emit(fileTopic(p), 'tree');
     }, 2400);
   }
-  emit(...changedTopics, 'review', 'threads', 'agents', 'progress', 'tree', 'ui', 'vspace', 'pending', 'batches');
+  emit(...changedTopics, 'review', 'threads', 'agents', 'progress', 'tree', 'ui', 'vspace', 'pending', 'batches', 'archived');
   if (listChanged) emit('files');
 }
 
@@ -712,8 +723,8 @@ export async function submitReview(mode: 'discuss' | 'implement', body: string):
   setFinishOpen(false);
   setPendingCount(0);
   emit('batches', 'threads');
-  const none = S.agents.length === 0 ? ' No agent is connected: it waits until one connects.' : '';
-  pushToast({ kind: 'info', text: `Review sent to agent (${MODE_LABEL[mode]}, ${n} comment${n === 1 ? '' : 's'}).${none}` });
+  const none = S.agents.length === 0 ? ' Waiting for an agent · tell your agent: “Address the Margin feedback.”' : '';
+  pushToast({ kind: 'info', text: `Review sent (${MODE_LABEL[mode]}, ${n} comment${n === 1 ? '' : 's'}).${none}` });
   return true;
 }
 
@@ -769,6 +780,17 @@ export function threadLabel(t: Thread): string {
 
 export function upsertThread(t: Thread, opts: { quiet: boolean; reindex: boolean }) {
   const prev = S.threads.get(t.id);
+  // The live-view rule (server side): resolved + outdated threads leave the diff and live in History.
+  if (t.archived) {
+    if (!prev) return;
+    removeThread(t.id);
+    S.archivedCount++;
+    emit('archived');
+    pushToast({ kind: 'info', text: `Thread #${t.id} moved to History: resolved, code changed.`, href: historyHref() });
+    return;
+  }
+  // An older thread came back from History (reopened, or its code returned): refresh the count.
+  if (!prev && S.archivedCount > 0 && Date.now() - Date.parse(t.createdAt) > 30_000) void refetch(false);
   if (prev && JSON.stringify(prev) === JSON.stringify(t)) return;
   S.threads.set(t.id, t);
   const last = t.messages[t.messages.length - 1];
@@ -1440,8 +1462,18 @@ export function init(reviewId: string) {
   restoreDrafts();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => emit('ui'));
   window.addEventListener('popstate', () => setScope(scopeFromUrl(), { push: false }));
-  void loadReview({ initial: true });
+  void loadReview({ initial: true }).then(jumpFromHash);
   connectEvents();
+}
+
+/** `#thread-12` (History's "Open in diff"): scroll to that thread once the review is loaded. */
+function jumpFromHash() {
+  const m = /^#thread-(\d+)$/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  const id = Number(m[1]);
+  if (S.threads.has(id)) requestAnimationFrame(() => jumpToThread(id));
+  else pushToast({ kind: 'info', text: `Thread #${id} is not in this diff any more. It stays in History.`, href: historyHref() });
 }
 
 export function fileKey(path: string) {

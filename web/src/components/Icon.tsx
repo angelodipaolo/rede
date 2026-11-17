@@ -1,5 +1,6 @@
 const P: Record<string, string> = {
   right: 'M6 4l4 4-4 4',
+  back: 'M9.5 4L5.5 8l4 4',
   downchev: 'M4 6l4 4 4-4',
   up: 'M8 12V4M4.5 7.5L8 4l3.5 3.5',
   down: 'M8 4v8M4.5 8.5L8 12l3.5-3.5',
