@@ -1,6 +1,7 @@
 {
   "name": "rede",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Local code review command center: review a git diff in the browser and talk to a coding agent in line threads.",
   "type": "module",
   "private": true,

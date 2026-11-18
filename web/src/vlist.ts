@@ -6,7 +6,7 @@
  */
 import type { DiffFileMeta } from '../../src/shared/types.ts';
 import { emit, emitHooks } from './bus.ts';
-import { getDiff, getStaleDiff, holdUntil, isCollapsed, nav, requestHunks, S, setCurrent } from './store.ts';
+import { getDiff, getStaleDiff, holdUntil, isCollapsed, nav, requestHunks, S, setCurrent, visibleFiles } from './store.ts';
 
 const GAP = 10; // space between cards
 const HEADER = 38; // header + card borders
@@ -163,10 +163,14 @@ export function invalidateLayout() {
 }
 
 /** Recomputes cumulative tops when something changed. O(files). */
+let layoutFiles: DiffFileMeta[] | null = null;
 export function layout() {
-  if (!dirty && V.tops.length === S.files.length + 1) return;
+  const currentFiles = visibleFiles();
+  if (layoutFiles !== currentFiles) dirty = true;
+  layoutFiles = currentFiles;
+  if (!dirty && V.tops.length === visibleFiles().length + 1) return;
   dirty = false;
-  const files = S.files;
+  const files = visibleFiles();
   const n = files.length;
   if (V.tops.length !== n + 1) V.tops = new Float64Array(n + 1);
   let y = 0;
@@ -197,7 +201,7 @@ export function layout() {
 
 function indexAt(y: number): number {
   const t = V.tops;
-  const n = S.files.length;
+  const n = visibleFiles().length;
   let lo = 0;
   let hi = n - 1;
   while (lo < hi) {
@@ -215,17 +219,17 @@ export function updateWindow(force = false) {
   const sc = S.scroller;
   if (!sc) return;
   layout();
-  const n = S.files.length;
+  const n = visibleFiles().length;
   const top = sc.scrollTop - PAD_TOP;
   const h = sc.clientHeight || 800;
   const first = n ? indexAt(Math.max(0, top - h)) : 0;
   const last = n ? indexAt(top + h * 2.2) : -1;
   V.anchorIdx = n ? indexAt(Math.max(0, top)) : 0;
-  V.anchorPath = S.files[V.anchorIdx]?.path ?? null;
+  V.anchorPath = visibleFiles()[V.anchorIdx]?.path ?? null;
   V.anchorTop = V.tops[V.anchorIdx] ?? 0;
-  const cur = n ? S.files[indexAt(Math.max(0, top + 8))] : undefined;
-  if (cur) setCurrent(cur.path);
-  V.spacerPath = S.files[first]?.path ?? null;
+  const cur = n ? visibleFiles()[indexAt(Math.max(0, top + 8))] : undefined;
+  setCurrent(cur?.path ?? null);
+  V.spacerPath = visibleFiles()[first]?.path ?? null;
   V.spacerTop = V.tops[first] ?? 0;
   if (force || first !== V.first || last !== V.last) {
     V.first = first;
@@ -235,7 +239,7 @@ export function updateWindow(force = false) {
   // Prefetch hunks for the window (which already covers the next screenful).
   const want: string[] = [];
   for (let i = first; i <= last; i++) {
-    const f = S.files[i]!;
+    const f = visibleFiles()[i]!;
     if (!isCollapsed(f) && !getDiff(f.path)) want.push(f.path);
   }
   if (want.length) requestHunks(want);
@@ -404,7 +408,7 @@ export function scrollToIndex(i: number) {
   reading = null;
   sc.scrollTop = V.tops[i]! + PAD_TOP;
   updateWindow(true);
-  const f = S.files[i];
+  const f = visibleFiles()[i];
   if (f && !getDiff(f.path)) requestHunks([f.path], true);
 }
 
@@ -415,6 +419,7 @@ nav.toFile = (path) => {
 };
 
 nav.fileTop = (path) => {
+  layout();
   const i = V.index.get(path);
   const sc = S.scroller;
   if (i === undefined || !sc) return null;

@@ -2577,3 +2577,23 @@ kbd {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* Comment focus and thread navigation */
+.comment-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.comment-filter input { accent-color: var(--accent); }
+.comment-filter .fcount { margin-left: auto; white-space: nowrap; }
+.thread-nav { display: flex; gap: 2px; }
+.thread-nav kbd { color: var(--text-3); font-size: var(--fs-xs); }
+.thread-nav button:disabled { opacity: .45; cursor: default; }
+@media (max-width: 1400px) {
+  .thread-nav button > span { display: none; }
+}

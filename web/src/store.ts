@@ -146,6 +146,7 @@ export const S = {
   sidebarW: Number(lsGet('rede:sidebar:w')) || 280,
   sidebarHidden: lsGet('rede:sidebar:hidden') === '1',
   filter: '',
+  commentedOnly: false,
   scroller: null as HTMLElement | null,
   /** Pending messages in the review in progress (server side; survives reload). */
   pendingCount: 0,
@@ -156,6 +157,45 @@ export const S = {
   /** Threads of this review that live only in History (resolved and outdated). */
   archivedCount: 0,
 };
+
+// Keep commented files visible until the filter session or scope ends.
+const commentedPaths = new Set<string>();
+let visibleSource: DiffFileMeta[] | null = null;
+let visibleIndex: Map<string, Thread[]> | null = null;
+let visibleScope: ReviewScope | null = null;
+let visibleMode = false;
+let visibleCache: DiffFileMeta[] = [];
+
+/** Shared diff membership. Filename search applies only to the sidebar. */
+export function visibleFiles(): DiffFileMeta[] {
+  if (visibleScope !== S.scope || visibleMode !== S.commentedOnly) {
+    commentedPaths.clear();
+    visibleSource = null;
+  }
+  if (visibleSource === S.files && visibleIndex === S.threadsByPath && visibleScope === S.scope && visibleMode === S.commentedOnly) return visibleCache;
+  visibleScope = S.scope;
+  visibleMode = S.commentedOnly;
+  visibleSource = S.files;
+  visibleIndex = S.threadsByPath;
+  if (S.commentedOnly) {
+    for (const [path, threads] of S.threadsByPath) {
+      if (S.fileByPath.has(path) && threads.some((t) => t.inScope && !t.archived)) commentedPaths.add(path);
+    }
+  }
+  const next = S.commentedOnly ? S.files.filter((f) => commentedPaths.has(f.path)) : S.files;
+  if (next.length !== visibleCache.length || next.some((f, i) => f !== visibleCache[i])) visibleCache = next;
+  return visibleCache;
+}
+
+export function setCommentedOnly(value: boolean) {
+  if (S.commentedOnly === value) return;
+  preserveScroll(() => {
+    S.commentedOnly = value;
+    const files = visibleFiles();
+    if (!files.some((f) => f.path === S.current)) setCurrent(files[0]?.path ?? null);
+    emit('files', 'tree', 'ui', 'vspace');
+  });
+}
 
 /** Link to History, remembering the review to come back to. */
 export function historyHref(): string {
@@ -369,6 +409,8 @@ function indexThreads() {
   }
   for (const arr of by.values()) arr.sort((a, b) => (a.anchor.endLine ?? 0) - (b.anchor.endLine ?? 0) || a.id - b.id);
   S.threadsByPath = by;
+  const previous = visibleCache;
+  if (visibleFiles() !== previous) emit('files', 'vspace');
 }
 
 function colMap(): Map<string, boolean> {
@@ -1416,6 +1458,7 @@ export const nav = {
 };
 
 export function scrollToFile(path: string, opts: { instant?: boolean } = {}) {
+  if (!visibleFiles().some((f) => f.path === path)) return;
   nav.toFile(path, opts);
   setCurrent(path);
 }
@@ -1428,11 +1471,19 @@ export function flashElement(el: Element) {
 
 export function jumpToThread(id: number) {
   const t = S.threads.get(id);
-  if (!t) return;
+  if (!t) {
+    pushToast({ kind: 'info', text: `Thread #${id} stays in History.`, href: historyHref() });
+    return;
+  }
   const go = () => {
     const t2 = S.threads.get(id);
     if (!t2) return;
     const f = S.fileByPath.get(t2.anchor.path);
+    if (!t2.inScope || !f) {
+      pushToast({ kind: 'info', text: `Thread #${id} is outside this diff. Open it in History.`, href: historyHref() });
+      return;
+    }
+    if (!visibleFiles().some((file) => file.path === f.path)) setCommentedOnly(false);
     if (f && isCollapsed(f)) {
       colMap().set(f.path, false);
       emit(fileTopic(f.path), 'tree');
@@ -1460,14 +1511,32 @@ export function jumpToThread(id: number) {
   } else go();
 }
 
-/** Ordered list of open threads in diff order, used by n/p. */
+/** Navigable threads in visible diff order; the comment filter includes resolved threads. */
 export function orderedOpenThreads(): Thread[] {
   const out: Thread[] = [];
-  for (const f of S.files) {
+  for (const f of visibleFiles()) {
     const arr = S.threadsByPath.get(f.path);
-    if (arr) for (const t of arr) if (!t.resolved) out.push(t);
+    if (arr) for (const t of arr) if (t.inScope && !t.archived && (S.commentedOnly || !t.resolved)) out.push(t);
   }
   return out;
+}
+
+export function moveThread(dir: 1 | -1) {
+  const list = orderedOpenThreads();
+  if (!list.length || !S.scroller) return;
+  const sTop = S.scroller.getBoundingClientRect().top;
+  const marker = sTop + Math.max(80, S.scroller.clientHeight * 0.25) + (dir === 1 ? 4 : -4);
+  const pos = list.map((t) => {
+    const el = S.scroller!.querySelector<HTMLElement>(`[data-thread="${t.id}"]`);
+    if (el) return el.getBoundingClientRect().top;
+    const top = nav.fileTop(t.anchor.path);
+    return top === null ? -1e9 : sTop + top + 1;
+  });
+  let target = -1;
+  if (dir === 1) target = pos.findIndex((y) => y > marker);
+  else for (let i = pos.length - 1; i >= 0; i--) if (pos[i]! < marker) { target = i; break; }
+  if (target < 0) target = dir === 1 ? 0 : list.length - 1;
+  jumpToThread(list[target]!.id);
 }
 
 export function init(reviewId: string) {

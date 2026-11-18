@@ -3,9 +3,9 @@ import {
   commentOn,
   cycleScope,
   isCollapsed,
-  jumpToThread,
   nav,
-  orderedOpenThreads,
+  moveThread,
+  visibleFiles,
   S,
   scrollToFile,
   setCollapsed,
@@ -20,11 +20,11 @@ import { isTyping } from './util.ts';
 
 function currentIndex(): number {
   if (!S.current) return -1;
-  return S.files.findIndex((f) => f.path === S.current);
+  return visibleFiles().findIndex((f) => f.path === S.current);
 }
 
 function moveFile(dir: 1 | -1) {
-  const files = S.files;
+  const files = visibleFiles();
   if (!files.length) return;
   let i = currentIndex();
   const sc = S.scroller;
@@ -38,24 +38,6 @@ function moveFile(dir: 1 | -1) {
   }
   i = Math.max(0, Math.min(files.length - 1, i + dir));
   scrollToFile(files[i]!.path);
-}
-
-function moveThread(dir: 1 | -1) {
-  const list = orderedOpenThreads();
-  if (!list.length || !S.scroller) return;
-  const sTop = S.scroller.getBoundingClientRect().top;
-  const marker = sTop + Math.max(80, S.scroller.clientHeight * 0.25) + (dir === 1 ? 4 : -4);
-  const pos = list.map((t) => {
-    const el = S.scroller!.querySelector<HTMLElement>(`[data-thread="${t.id}"]`);
-    if (el) return el.getBoundingClientRect().top;
-    const top = nav.fileTop(t.anchor.path);
-    return top === null ? -1e9 : sTop + top + 1;
-  });
-  let target = -1;
-  if (dir === 1) target = pos.findIndex((y) => y > marker);
-  else for (let i = pos.length - 1; i >= 0; i--) if (pos[i]! < marker) { target = i; break; }
-  if (target < 0) target = dir === 1 ? 0 : list.length - 1;
-  jumpToThread(list[target]!.id);
 }
 
 export function installKeys(): () => void {

@@ -1,8 +1,8 @@
 import { memo } from 'preact/compat';
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { DiffFileMeta as DiffFile } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
-import { S, scrollToFile, setCollapsed, isCollapsed, setSidebar } from '../store.ts';
+import { S, scrollToFile, setCollapsed, isCollapsed, setSidebar, visibleFiles, setCommentedOnly } from '../store.ts';
 import { fuzzy } from '../util.ts';
 import { Icon } from './Icon.tsx';
 
@@ -115,7 +115,7 @@ export function Sidebar() {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(800);
   const treeRef = useRef<HTMLDivElement>(null);
-  const files = S.files;
+  const files = visibleFiles();
   const q = S.filter.trim();
   const shown = useMemo(() => (q ? files.filter((f) => fuzzy(q, f.path) >= 0) : files), [files, q]);
   const tree = useMemo(() => buildTree(shown), [shown]);
@@ -135,6 +135,13 @@ export function Sidebar() {
   }, [tree, closedDirs, q]);
 
   const activeIdx = useMemo(() => flat.findIndex((r) => 'f' in r && r.f.path === S.current), [flat, S.current]);
+
+  useLayoutEffect(() => {
+    const el = treeRef.current;
+    if (!el) return;
+    el.scrollTop = Math.min(el.scrollTop, Math.max(0, flat.length * ROW_H - el.clientHeight));
+    setScrollTop(el.scrollTop);
+  }, [flat]);
 
   // Keep the current file visible in the tree, unless the pointer is in the tree.
   useEffect(() => {
@@ -247,6 +254,11 @@ export function Sidebar() {
         />
         {q && <span class="fcount">{shown.length}</span>}
       </div>
+      <label class="comment-filter">
+        <input type="checkbox" checked={S.commentedOnly} onChange={(e) => setCommentedOnly(e.currentTarget.checked)} />
+        <span>Files with comments</span>
+        <span class="fcount">{files.length} of {S.files.length}</span>
+      </label>
       <div
         class="tree"
         ref={treeRef}
@@ -258,6 +270,7 @@ export function Sidebar() {
         <div style={{ height: flat.length * ROW_H, position: 'relative' }}>
           <div style={{ position: 'absolute', top: start * ROW_H, left: 0, right: 0 }}>{rows}</div>
         </div>
+        {S.commentedOnly && files.length === 0 && <div class="tree-empty">No files with comments in this scope.</div>}
         {files.length > 0 && shown.length === 0 && <div class="tree-empty">No file matches “{q}”.</div>}
       </div>
       <Resizer />

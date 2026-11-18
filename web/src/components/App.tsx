@@ -4,7 +4,7 @@ import { api } from '../api.ts';
 import { subscribe, useTopics } from '../bus.ts';
 import { setObserverRoot } from '../io.ts';
 import { installKeys } from '../keys.ts';
-import { init, S } from '../store.ts';
+import { init, S, visibleFiles } from '../store.ts';
 import { captureReading, correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
 import { relTime } from '../util.ts';
 import { FileCard, updateAllOverflow } from './FileCard.tsx';
@@ -44,7 +44,7 @@ function VItem({ path }: { path: string }) {
 function DiffList() {
   useTopics('files', 'vwin', 'vspace');
   useLayoutEffect(() => correctAnchor());
-  const files = S.files;
+  const files = visibleFiles();
   if (!files.length) return null;
   layout();
   const first = Math.min(V.first, files.length - 1);
@@ -113,10 +113,11 @@ function DiffColumn() {
           {S.loadError && !r && <div class="empty"><h2>Could not load the review</h2><p>{S.loadError}</p></div>}
           {!r && !S.loadError && <div class="empty"><p class="muted">Loading…</p></div>}
           {r && S.files.length === 0 && <EmptyState />}
+          {r && S.files.length > 0 && visibleFiles().length === 0 && <div class="empty"><h2>No files with comments in this scope.</h2><p>Turn off “Files with comments” to see all changes.</p></div>}
           <DiffList />
           <OutdatedSection />
           <OrphanDrafts />
-          {S.files.length > 0 && <div class="tail">End of diff · {S.files.length} files</div>}
+          {S.files.length > 0 && <div class="tail">End of diff · {visibleFiles().length} of {S.files.length} files</div>}
           <div class="tail-arch">
             <ArchivedLink tail />
           </div>

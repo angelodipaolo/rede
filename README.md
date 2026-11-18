@@ -35,6 +35,14 @@ The review opens at `http://127.0.0.1:<port>/r/<review-id>`. The diff refreshes
 live while files change, so you can review while an agent keeps writing code.
 Uncommitted reviews have three views: all changes, staged, and unstaged.
 
+After an agent replies, enable **Files with comments** in the sidebar to show
+only commented files in both the tree and diff. Resolved comments are included.
+Use **Previous** / **Next** or `p` / `n` to move between threads. In this mode,
+navigation includes resolved threads and opens them for inspection. Files stay
+visible when you resolve comments, until you turn the filter off or switch
+scope. Threads whose files leave the diff appear in the Outdated section;
+resolved outdated threads remain in History.
+
 Other commands: `rede status`, `rede list`, `rede stop`, `rede export`.
 
 ### Comments and reviews

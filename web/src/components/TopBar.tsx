@@ -3,6 +3,8 @@ import type { ReviewScope } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
 import {
   cycleTheme,
+  moveThread,
+  orderedOpenThreads,
   deleteMessage,
   discardReview,
   historyHref,
@@ -83,6 +85,17 @@ function ThreadCount() {
       </span>
       {unread > 0 && <span class="dot unread" />}
     </button>
+  );
+}
+
+function ThreadNavigation() {
+  useTopics('threads', 'files', 'ui');
+  const disabled = orderedOpenThreads().length === 0;
+  return (
+    <nav class="thread-nav" aria-label="Thread navigation">
+      <button class="tb-btn" disabled={disabled} onClick={() => moveThread(-1)} aria-label="Previous thread" title="Previous thread (p)"><Icon name="back" /><span>Previous <kbd>p</kbd></span></button>
+      <button class="tb-btn" disabled={disabled} onClick={() => moveThread(1)} aria-label="Next thread" title="Next thread (n)"><Icon name="right" /><span>Next <kbd>n</kbd></span></button>
+    </nav>
   );
 }
 
@@ -361,6 +374,7 @@ export function TopBar() {
       <span class="sp" />
       <Conn />
       <FinishReview />
+      <ThreadNavigation />
       <ThreadCount />
       <Presence />
       <a class="ib" href={historyHref()} title="History of past reviews (h)" aria-label="History">
