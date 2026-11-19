@@ -178,6 +178,10 @@ function TabSync({ id }: { id: string }) {
   useEffect(() => {
     if (info && title) openTab({ ws: info.workspace.id, id, title, wsName: info.workspace.name, repo: info.workspace.repo.name, branch: info.repo.branch });
   }, [info, title, id]);
+  useEffect(() => {
+    const r = S.review;
+    document.title = r ? `${r.title} · ${r.repo.name} · Rede` : 'Rede';
+  });
   return null;
 }
 
@@ -192,10 +196,6 @@ export function ReviewApp({ id }: { id: string }) {
       offAck();
     };
   }, [id]);
-  useEffect(() => {
-    const r = S.review;
-    document.title = r ? `${r.title} · ${r.repo.name} · Rede` : 'Rede';
-  });
   return (
     <div class="app">
       <TabSync id={id} />
