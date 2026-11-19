@@ -1,12 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ReviewSummary } from '../../../src/shared/types.ts';
 import { api, reviewHref, workspace, wsHref } from '../api.ts';
+import { Markdown } from '../markdown.tsx';
+import { ackWhenSeen, openTab } from '../nav.ts';
+import { Tabs } from './Tabs.tsx';
 import { subscribe, useTopics } from '../bus.ts';
 import { setObserverRoot } from '../io.ts';
 import { installKeys } from '../keys.ts';
 import { init, S, visibleFiles, showAllDirectories } from '../store.ts';
 import { captureReading, correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
-import { relTime } from '../util.ts';
+import { agentColorClass, relTime } from '../util.ts';
 import { FileCard, updateAllOverflow } from './FileCard.tsx';
 import { ArchivedLink, OrphanDrafts, OutdatedSection, ShortcutSheet, ThreadsPanel, Toasts } from './Panels.tsx';
 import { Icon } from './Icon.tsx';
@@ -120,6 +123,7 @@ function DiffColumn() {
               {S.commentedOnly && <p>Turn off “Files with comments” to see all changes.</p>}
             </div>
           )}
+          {r && <SummaryBanner />}
           <DiffList />
           <OutdatedSection />
           <OrphanDrafts />
@@ -133,11 +137,60 @@ function DiffColumn() {
   );
 }
 
+/** The agent's description of the change, shown above the diff. */
+function SummaryBanner() {
+  useTopics('review');
+  const [open, setOpen] = useState(true);
+  const r = S.review!;
+  if (!r.summary) return null;
+  const by = r.publishedBy;
+  const agent = by?.kind === 'agent';
+  return (
+    <section class={`summary${agent ? ' ' + agentColorClass(by!.name) : ''}${open ? '' : ' closed'}`} aria-label="Change summary">
+      <header onClick={() => setOpen(!open)}>
+        <Icon name={open ? 'downchev' : 'right'} size={14} />
+        <b>Summary</b>
+        {by && (
+          <span class={`summary-by${agent ? ' ' + agentColorClass(by.name) : ''}`}>
+            by {agent ? by.name : 'you'}
+            {agent && <span class="role">agent</span>}
+          </span>
+        )}
+        {r.readyAt && (
+          <span class="muted" title={new Date(r.readyAt).toLocaleString()}>
+            ready for review {relTime(r.readyAt)}
+          </span>
+        )}
+      </header>
+      {open && <Markdown class="md summary-body" src={r.summary} />}
+    </section>
+  );
+}
+
+/** Keeps the tab of this review, named after its worktree, in the tab strip. */
+function TabSync({ id }: { id: string }) {
+  useTopics('review');
+  const [info, setInfo] = useState<Awaited<ReturnType<typeof api.info>> | null>(null);
+  useEffect(() => {
+    void api.info().then(setInfo, () => {});
+  }, [id]);
+  const title = S.review?.title;
+  useEffect(() => {
+    if (info && title) openTab({ ws: info.workspace.id, id, title, wsName: info.workspace.name, repo: info.workspace.repo.name, branch: info.repo.branch });
+  }, [info, title, id]);
+  return null;
+}
+
 export function ReviewApp({ id }: { id: string }) {
   useTopics('layout');
   useEffect(() => {
     init(id);
-    return installKeys();
+    const offKeys = installKeys();
+    const offAck = ackWhenSeen(workspace(), () => S.review);
+    return () => {
+      offKeys();
+      offAck();
+    };
   }, [id]);
   useEffect(() => {
     const r = S.review;
@@ -145,6 +198,8 @@ export function ReviewApp({ id }: { id: string }) {
   });
   return (
     <div class="app">
+      <TabSync id={id} />
+      <Tabs />
       <TopBar />
       <div class="body">
         <Sidebar />

@@ -755,6 +755,12 @@ function handleEvent(ev: ServerEvent) {
     case 'pending':
       setPendingCount(ev.pendingCount);
       break;
+    case 'summary':
+      if (S.review) {
+        S.review = { ...S.review, ...ev.review };
+        emit('review');
+      }
+      break;
   }
 }
 

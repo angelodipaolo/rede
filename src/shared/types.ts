@@ -573,7 +573,8 @@ export type ServerEvent =
   | { type: 'pending'; pendingCount: number } // the review in progress changed size
   | { type: 'viewed'; path: string; viewed: boolean }
   | { type: 'diff-changed'; diffFingerprint: string } // the UI refetches the review
-  | { type: 'agents'; agents: AgentPresence[] };
+  | { type: 'agents'; agents: AgentPresence[] }
+  | { type: 'summary'; review: ReviewSummary }; // published, acknowledged, or the summary changed
 
 // ------------------------------------------------------------- HTTP: agent
 

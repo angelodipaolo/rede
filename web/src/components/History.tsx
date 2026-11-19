@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { HistoryEntry, ReviewSummary, Thread } from '../../../src/shared/types.ts';
 import { entryMarkdown, threadLocation } from '../../../src/shared/history-md.ts';
 import { api, reviewHref, workspace } from '../api.ts';
+import { Tabs } from './Tabs.tsx';
 import { useTopics } from '../bus.ts';
 import { Markdown } from '../markdown.tsx';
 import { applyTheme, cycleTheme, HUMAN, S } from '../store.ts';
@@ -451,6 +452,7 @@ export function HistoryApp() {
 
   return (
     <div class="hist-app">
+      <Tabs />
       <header class="topbar">
         <a class="ib" href={from ? reviewHref(workspace(), from) : '/'} title={from ? 'Back to the review (h)' : 'All reviews (h)'} aria-label="Back">
           <Icon name="back" />

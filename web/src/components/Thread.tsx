@@ -218,6 +218,11 @@ export function ThreadView({ id, pinned }: { id: number; pinned?: boolean }) {
       <div class="th-head">
         <span class="th-ref">{lineRef}</span>
         <ModeChip t={t} />
+        {t.messages[0]?.author.kind === 'agent' && (
+          <span class={`badge finding ${agentColorClass(t.messages[0].author.name)}`} title={`Started by the agent ${t.messages[0].author.name}`}>
+            Finding · {t.messages[0].author.name}
+          </span>
+        )}
         {t.noteOnly && (
           <span class="badge note" title="Private note. Agents never see it.">
             <Icon name="note" size={12} /> Note

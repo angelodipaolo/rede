@@ -2601,3 +2601,328 @@ kbd {
 @media (max-width: 1400px) {
   .thread-nav button > span { display: none; }
 }
+
+/* ------------------------------------------------------------ tabs (open reviews) */
+.tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 32px;
+  padding: 0 6px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  min-width: 0;
+  flex: 0 1 auto;
+  margin-top: 4px;
+  padding: 0 6px 0 10px;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.tab.on {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 -1px 0 var(--border) inset, 1px 0 0 var(--border), -1px 0 0 var(--border);
+}
+.tab-home {
+  flex: none;
+  padding-right: 10px;
+}
+.tab-ws {
+  flex: none;
+  font-weight: 600;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-badge,
+.tab-n {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+.tab-badge {
+  background: #e5484d;
+  color: #fff;
+}
+.tab-n {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.tab-dot {
+  flex: none;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ag, var(--accent));
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.tab .tab-dot {
+  margin-right: 0;
+}
+.tab-x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+.tab:hover .tab-x,
+.tab.on .tab-x {
+  opacity: 1;
+}
+.tab-x:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------ change summary */
+.summary {
+  margin: 12px 16px 4px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ag, var(--accent));
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.summary header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--fs-sm);
+}
+.summary-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ag, var(--text-2));
+  font-weight: 600;
+}
+.summary-body {
+  padding: 0 14px 10px 32px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* ------------------------------------------------------------ thread author */
+.badge.finding {
+  color: var(--ag);
+  border-color: color-mix(in srgb, var(--ag) 40%, transparent);
+  background: color-mix(in srgb, var(--ag) 8%, transparent);
+}
+
+/* ------------------------------------------------------------ dashboard */
+.dash-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.dash {
+  flex: 1;
+  overflow: auto;
+  padding: 20px 24px 60px;
+}
+.dash > * {
+  max-width: 980px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.db-sec {
+  margin-bottom: 28px;
+}
+.db-sec > h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-lg);
+  margin: 0 0 10px;
+}
+.db-sec > h2 .count {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 1px 7px;
+}
+.db-cards,
+.db-list,
+.db-ws ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.db-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px 14px;
+}
+.db-card + .db-card {
+  margin-top: 10px;
+}
+.db-card-head,
+.db-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.db-card-foot {
+  margin-top: 8px;
+}
+.db-title {
+  display: block;
+  margin: 4px 0;
+  font-weight: 650;
+  font-size: var(--fs-lg);
+  color: var(--text);
+  text-decoration: none;
+}
+.db-title:hover {
+  color: var(--accent-text);
+}
+.db-summary {
+  max-height: 9.5em;
+  overflow: hidden;
+  color: var(--text);
+  -webkit-mask-image: linear-gradient(#000 75%, transparent);
+  mask-image: linear-gradient(#000 75%, transparent);
+}
+.db-where {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.db-repo {
+  font-weight: 650;
+  color: var(--text);
+}
+.db-wt::before {
+  content: '/ ';
+  color: var(--text-3);
+}
+.db-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--ag, var(--text-2));
+}
+.db-ws {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin-bottom: 10px;
+}
+.db-ws.missing {
+  opacity: 0.6;
+}
+.db-ws > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: var(--fs-sm);
+}
+.db-wt-name {
+  font-weight: 650;
+}
+.db-none {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: var(--fs-sm);
+}
+.db-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 16px;
+  padding: 8px 12px;
+  color: var(--text);
+  text-decoration: none;
+}
+.db-list .db-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  margin-bottom: 6px;
+}
+.db-ws li + li .db-row {
+  border-top: 1px solid var(--border-soft);
+}
+.db-row:hover {
+  background: var(--surface-2);
+}
+.db-row-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.db-row-meta {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  grid-row: 1;
+  grid-column: 2;
+}
+.db-row-sum {
+  grid-column: 1 / -1;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.db-row-meta .attn {
+  color: var(--accent-text);
+}
+.dash .empty {
+  margin-top: 12vh;
+}
+a.btn {
+  text-decoration: none;
+}

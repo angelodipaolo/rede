@@ -343,8 +343,7 @@ export class Rede {
     if (summary.length > 20_000) throw badRequest('The summary is too long (20,000 characters at most).');
     const author = this.validateAuthor(req.author);
     this.store.publishReview(id, summary, author, req.ready !== false, nowIso());
-    this.onChange(id);
-    return this.summary(this.store.getReview(id)!);
+    return this.emitSummary(id);
   }
 
   /** The human has seen the review: it no longer waits (until an agent publishes it again). */
@@ -352,9 +351,15 @@ export class Rede {
     const r = this.requireReview(id);
     if (r.readyAt && (!r.ackedAt || r.ackedAt < r.readyAt)) {
       this.store.ackReview(id, nowIso());
-      this.onChange(id);
+      return this.emitSummary(id);
     }
     return this.summary(this.store.getReview(id)!);
+  }
+
+  private emitSummary(id: string): ReviewSummary {
+    const s = this.summary(this.store.getReview(id)!);
+    this.broadcast(id, () => ({ type: 'summary', review: s }));
+    return s;
   }
 
   listReviews(): ReviewSummary[] {
