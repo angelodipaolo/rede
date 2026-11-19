@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import type { ReviewScope, ServerEvent } from '../shared/types.ts';
-import { badRequest, HttpError, notFound } from './errors.ts';
+import type { HubEvent, PublishResponse, ReviewScope, ServerEvent } from '../shared/types.ts';
+import { badRequest, HttpError, notFound, VERSION } from './errors.ts';
 import { patchArgs } from './diff.ts';
 import { gitStream } from './git.ts';
+import type { Hub } from './hub.ts';
 import type { Rede } from './service.ts';
 
 export interface HttpOptions {
@@ -84,7 +85,16 @@ function intParam(s: string | undefined): number {
   return n;
 }
 
-export function createHttpServer(rede: Rede, opts: HttpOptions): http.Server {
+/** Link that opens a review in the Rede app. */
+export function appUrl(ws: string, reviewId: string): string {
+  return `rede://open/${encodeURIComponent(ws)}/${encodeURIComponent(reviewId)}`;
+}
+
+export function webUrl(port: number, ws: string, reviewId: string): string {
+  return `http://127.0.0.1:${port}/w/${encodeURIComponent(ws)}/r/${encodeURIComponent(reviewId)}`;
+}
+
+export function createHttpServer(hub: Hub, opts: HttpOptions & { build?: number }): http.Server {
   let port = 0;
   const activity = () => opts.onActivity?.();
   const keepAliveMs = opts.keepAliveMs ?? 15_000;
@@ -138,15 +148,52 @@ export function createHttpServer(rede: Rede, opts: HttpOptions): http.Server {
     if (!p.startsWith('/api/')) return serveStatic(p, res);
 
     const seg = p.slice(5).split('/').map(decodeURIComponent);
-    const route = `${m} ${seg.map((s, i) => (i > 0 && ['reviews', 'threads', 'messages'].includes(seg[i - 1]!) ? ':id' : s)).join('/')}`;
-
+    if (seg[0] === 'w' && seg.length >= 3) {
+      const rede = await hub.rede(seg[1]!);
+      return handleWorkspace(rede, seg.slice(2), q, m, p, req, res);
+    }
+    const route = `${m} ${seg.map((s, i) => (i > 0 && seg[i - 1] === 'workspaces' ? ':id' : s)).join('/')}`;
     switch (route) {
       case 'GET health':
-        return sendJson(res, 200, { ok: true, name: 'rede', version: rede.version, repo: await rede.repoInfo(), pid: process.pid });
+        return sendJson(res, 200, { ok: true, name: 'rede', version: VERSION, build: opts.build, pid: process.pid, home: hub.home, port });
       case 'POST shutdown':
         sendJson(res, 200, { ok: true });
         setTimeout(() => opts.onShutdown?.(), 50);
         return;
+      case 'GET workspaces':
+        return sendJson(res, 200, hub.list());
+      case 'POST workspaces': {
+        const body = await readJson(req);
+        return sendJson(res, 200, await hub.register(body?.root));
+      }
+      case 'GET workspaces/:id':
+        return sendJson(res, 200, hub.workspace(seg[1]!));
+      case 'DELETE workspaces/:id':
+        hub.forget(seg[1]!);
+        return sendJson(res, 200, { ok: true });
+      case 'GET dashboard':
+        return sendJson(res, 200, await hub.dashboard());
+      case 'GET events':
+        return hubSse(req, res);
+      default:
+        throw notFound(`No route for ${m} ${p}.`);
+    }
+  }
+
+  async function handleWorkspace(
+    rede: Rede,
+    seg: string[],
+    q: URLSearchParams,
+    m: string,
+    p: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const route = `${m} ${seg.map((s, i) => (i > 0 && ['reviews', 'threads', 'messages'].includes(seg[i - 1]!) ? ':id' : s)).join('/')}`;
+
+    switch (route) {
+      case 'GET info':
+        return sendJson(res, 200, { workspace: hub.workspace(rede.workspaceId), repo: await rede.repoInfo() });
       case 'GET agents':
         return sendJson(res, 200, rede.agents());
       case 'GET reviews':
@@ -208,6 +255,14 @@ export function createHttpServer(rede: Rede, opts: HttpOptions): http.Server {
         const body = await readJson(req);
         return sendJson(res, 200, await rede.createThread(seg[1]!, parseScope(q.get('scope')), body));
       }
+      case 'POST reviews/:id/publish': {
+        const body = await readJson(req);
+        const review = rede.publish(seg[1]!, body);
+        const out: PublishResponse = { review, workspace: hub.workspace(rede.workspaceId), appUrl: appUrl(rede.workspaceId, review.id), webUrl: webUrl(port, rede.workspaceId, review.id) };
+        return sendJson(res, 200, out);
+      }
+      case 'POST reviews/:id/ack':
+        return sendJson(res, 200, rede.ack(seg[1]!));
       case 'POST reviews/:id/submit': {
         const body = await readJson(req);
         return sendJson(res, 200, rede.submitReview(seg[1]!, body));
@@ -216,7 +271,7 @@ export function createHttpServer(rede: Rede, opts: HttpOptions): http.Server {
         rede.discardPending(seg[1]!);
         return sendJson(res, 200, { ok: true });
       case 'GET reviews/:id/events':
-        return sse(seg[1]!, parseScope(q.get('scope')), req, res);
+        return sse(rede, seg[1]!, parseScope(q.get('scope')), req, res);
       case 'GET threads/:id':
         return sendJson(res, 200, await rede.getThread(intParam(seg[1]), optScope(q.get('scope'))));
       case 'PATCH threads/:id': {
@@ -269,7 +324,31 @@ export function createHttpServer(rede: Rede, opts: HttpOptions): http.Server {
     }
   }
 
-  async function sse(reviewId: string, scope: ReviewScope, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  function hubSse(req: http.IncomingMessage, res: http.ServerResponse): void {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    res.write('retry: 2000\n\n');
+    const send = (ev: HubEvent) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    const unlisten = hub.listen(send);
+    void hub.dashboard().then((d) => send({ type: 'dashboard', awaiting: d.awaiting, workspace: null, review: null }), () => {});
+    const ka = setInterval(() => res.write(': keep-alive\n\n'), keepAliveMs);
+    let closed = false;
+    const once = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(ka);
+      unlisten();
+      activity();
+    };
+    req.on('close', once);
+    res.on('close', once);
+  }
+
+  async function sse(rede: Rede, reviewId: string, scope: ReviewScope, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const send = (ev: ServerEvent) => {
       res.write(`data: ${JSON.stringify(ev)}\n\n`);
     };

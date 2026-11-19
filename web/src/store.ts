@@ -11,7 +11,10 @@ import type {
   Side,
   Thread,
 } from '../../src/shared/types.ts';
-import { api } from './api.ts';
+import { api, workspace, wsHref } from './api.ts';
+
+/** Key of a review in browser storage. One origin serves every workspace, so the key names both. */
+const reviewKey = (id: string = S.reviewId) => `${workspace()}/${id}`;
 import { emit } from './bus.ts';
 import { cancelHighlight, highlightText } from './highlight.ts';
 import { langForPath } from './langmap.ts';
@@ -206,7 +209,7 @@ export function visibleFiles(includeHidden = false): DiffFileMeta[] {
 function setHiddenDirs(dirs: Set<string>) {
   preserveScroll(() => {
     S.hiddenDirs = dirs;
-    lsSet(`rede:hidden-dirs:${S.reviewId}`, JSON.stringify([...dirs]));
+    lsSet(`rede:hidden-dirs:${reviewKey()}`, JSON.stringify([...dirs]));
     const files = visibleFiles();
     if (!files.some((f) => f.path === S.current)) setCurrent(files[0]?.path ?? null);
     emit('files', 'tree', 'ui', 'vspace');
@@ -239,7 +242,7 @@ export function setCommentedOnly(value: boolean) {
 
 /** Link to History, remembering the review to come back to. */
 export function historyHref(): string {
-  return S.reviewId ? `/history?from=${encodeURIComponent(S.reviewId)}` : '/history';
+  return S.reviewId ? wsHref(`/history?from=${encodeURIComponent(S.reviewId)}`) : wsHref('/history');
 }
 
 const fk = (path: string, scope: ReviewScope = S.scope) => `${scope}|${path}`;
@@ -845,10 +848,10 @@ export async function discardReview(): Promise<void> {
 
 /** The overall note of the review in progress: a local draft until the review is submitted. */
 export function reviewNote(): string {
-  return lsGet(`rede:reviewnote:${S.reviewId}`) ?? '';
+  return lsGet(`rede:reviewnote:${reviewKey()}`) ?? '';
 }
 export function setReviewNote(v: string) {
-  lsSet(`rede:reviewnote:${S.reviewId}`, v.trim() ? v : null);
+  lsSet(`rede:reviewnote:${reviewKey()}`, v.trim() ? v : null);
 }
 
 /** The "Comment vs Review" hint under composers shows for the first few sends. */
@@ -918,7 +921,7 @@ function removeThread(id: number) {
 }
 
 function saveUnread() {
-  lsSet(`rede:unread:${S.reviewId}`, JSON.stringify([...S.unread]));
+  lsSet(`rede:unread:${reviewKey()}`, JSON.stringify([...S.unread]));
 }
 
 export function markRead(id: number) {
@@ -1026,7 +1029,7 @@ let draftTimer: ReturnType<typeof setTimeout> | null = null;
 function saveDrafts() {
   if (draftTimer) clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
-    lsSet(`rede:composers:${S.reviewId}`, JSON.stringify([...S.composers.values()]));
+    lsSet(`rede:composers:${reviewKey()}`, JSON.stringify([...S.composers.values()]));
   }, 250);
 }
 
@@ -1035,7 +1038,7 @@ function saveDrafts() {
  * does not drop drafts it never saw, and drop drafts the other tab posted or discarded.
  */
 function onDraftsStorage(e: StorageEvent) {
-  if (e.key !== `rede:composers:${S.reviewId}`) return;
+  if (e.key !== `rede:composers:${reviewKey()}`) return;
   const parse = (v: string | null): ComposerState[] => {
     try {
       return v ? (JSON.parse(v) as ComposerState[]).filter((c) => c && c.key) : [];
@@ -1069,14 +1072,14 @@ function onDraftsStorage(e: StorageEvent) {
 
 export function restoreDrafts() {
   window.addEventListener('storage', onDraftsStorage);
-  const raw = lsGet(`rede:composers:${S.reviewId}`);
+  const raw = lsGet(`rede:composers:${reviewKey()}`);
   if (!raw) return;
   try {
     for (const c of JSON.parse(raw) as ComposerState[]) if (c && c.key) S.composers.set(c.key, c);
   } catch {
     /* ignore */
   }
-  const u = lsGet(`rede:unread:${S.reviewId}`);
+  const u = lsGet(`rede:unread:${reviewKey()}`);
   if (u) {
     try {
       for (const id of JSON.parse(u) as number[]) S.unread.add(id);
@@ -1587,7 +1590,7 @@ export function init(reviewId: string) {
   S.reviewId = reviewId;
   S.hiddenDirs = new Set();
   try {
-    const dirs: unknown = JSON.parse(lsGet(`rede:hidden-dirs:${reviewId}`) ?? '[]');
+    const dirs: unknown = JSON.parse(lsGet(`rede:hidden-dirs:${reviewKey(reviewId)}`) ?? '[]');
     if (Array.isArray(dirs)) S.hiddenDirs = new Set(dirs.filter((d): d is string => typeof d === 'string' && !!d && !d.startsWith('/') && d.split('/').every((p) => !!p && p !== '.' && p !== '..')));
   } catch { /* Ignore invalid saved preferences. */ }
   S.scope = scopeFromUrl();

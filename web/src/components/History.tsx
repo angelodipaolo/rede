@@ -2,7 +2,7 @@ import { memo } from 'preact/compat';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { HistoryEntry, ReviewSummary, Thread } from '../../../src/shared/types.ts';
 import { entryMarkdown, threadLocation } from '../../../src/shared/history-md.ts';
-import { api } from '../api.ts';
+import { api, reviewHref, workspace } from '../api.ts';
 import { useTopics } from '../bus.ts';
 import { Markdown } from '../markdown.tsx';
 import { applyTheme, cycleTheme, HUMAN, S } from '../store.ts';
@@ -59,7 +59,7 @@ const timeOf = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { ho
 
 function diffHref(t: Thread): string {
   const scope = t.homeScope !== 'all' ? `?scope=${t.homeScope}` : '';
-  return `/r/${encodeURIComponent(t.reviewId)}${scope}#thread-${t.id}`;
+  return `${reviewHref(workspace(), t.reviewId)}${scope}#thread-${t.id}`;
 }
 
 function StateChips({ t }: { t: Thread }) {
@@ -363,7 +363,7 @@ export function HistoryApp() {
     applyTheme();
     document.title = 'History · Rede';
     api.reviews().then(setReviews, () => {});
-    api.health().then((h) => {
+    api.info().then((h) => {
       setRepo(h.repo.name);
       document.title = `History · ${h.repo.name} · Rede`;
     }, () => {});
@@ -373,7 +373,7 @@ export function HistoryApp() {
         e.preventDefault();
         searchRef.current?.focus();
       } else if (e.key === 'h') {
-        location.href = from ? `/r/${encodeURIComponent(from)}` : '/';
+        location.href = from ? reviewHref(workspace(), from) : '/';
       } else if (e.key === 't') {
         cycleTheme();
       }
@@ -452,7 +452,7 @@ export function HistoryApp() {
   return (
     <div class="hist-app">
       <header class="topbar">
-        <a class="ib" href={from ? `/r/${encodeURIComponent(from)}` : '/'} title={from ? 'Back to the review (h)' : 'All reviews (h)'} aria-label="Back">
+        <a class="ib" href={from ? reviewHref(workspace(), from) : '/'} title={from ? 'Back to the review (h)' : 'All reviews (h)'} aria-label="Back">
           <Icon name="back" />
         </a>
         <div class="ident">

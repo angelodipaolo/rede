@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "npm run build:web && npm run build:server",
-    "build:server": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/cli.js --banner:js='#!/usr/bin/env node'",
+    "build:server": "node scripts/build-server.mjs",
     "build:web": "vite build web",
     "dev:web": "vite web",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",

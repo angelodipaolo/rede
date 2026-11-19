@@ -2,22 +2,29 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
 import { VERSION } from './errors.ts';
-import { discoverRepo, redeDir, type RepoPaths } from './git.ts';
 import { createHttpServer } from './http.ts';
-import { Rede } from './service.ts';
-import { Store } from './store.ts';
+import { Hub, redeHome } from './hub.ts';
 
 export interface ServerInfo {
   pid: number;
   port: number;
   startedAt: string;
   version: string;
-  /** Build id of the CLI bundle that started the server (see buildId). A newer CLI restarts an older server. */
+  /** Build stamp of the bundle that started the server (see buildId). A newer CLI restarts an older server. */
   build?: number;
+  home?: string;
 }
 
-/** Build id of a CLI bundle: its mtime. Rebuilding (npm run build:server) changes it. */
-export function buildId(cliPath: string): number | undefined {
+declare const __REDE_BUILD__: number | undefined;
+
+/**
+ * Build stamp of a CLI bundle. The bundle embeds the time it was built, so every copy of one
+ * build (the CLI on PATH, the copy inside Rede.app) has the same stamp. Falls back to the file's
+ * mtime when run from source.
+ */
+export function buildId(cliPath?: string): number | undefined {
+  if (typeof __REDE_BUILD__ === 'number') return __REDE_BUILD__;
+  if (!cliPath) return undefined;
   try {
     return Math.floor(fs.statSync(cliPath).mtimeMs);
   } catch {
@@ -25,21 +32,27 @@ export function buildId(cliPath: string): number | undefined {
   }
 }
 
-export function serverInfoPath(repo: RepoPaths): string {
-  return path.join(redeDir(repo), 'server.json');
+export function serverInfoPath(home: string): string {
+  return path.join(home, 'server.json');
 }
 
-export function readServerInfo(repo: RepoPaths): ServerInfo | null {
+export function readServerInfo(home: string): ServerInfo | null {
   try {
-    return JSON.parse(fs.readFileSync(serverInfoPath(repo), 'utf8')) as ServerInfo;
+    return JSON.parse(fs.readFileSync(serverInfoPath(home), 'utf8')) as ServerInfo;
   } catch {
     return null;
   }
 }
 
+/** Port the hub tries first. The dev proxy (web/vite.config.ts) uses the same default. */
+export const DEFAULT_PORT = 4319;
+
 export interface StartOptions {
-  cwd: string;
-  /** 0 or undefined: a random free port. */
+  /** $REDE_HOME. Default: redeHome(). */
+  home?: string;
+  /** Worktrees to register at start (tests). */
+  workspaces?: string[];
+  /** 0: a random free port. undefined: the last port, else DEFAULT_PORT, else a random one. */
   port?: number;
   /** Try this port first, fall back to a random one when it is taken (restart of an outdated server). */
   preferredPort?: number;
@@ -58,21 +71,18 @@ export interface StartOptions {
 }
 
 export interface RunningServer {
-  rede: Rede;
+  hub: Hub;
   server: http.Server;
   port: number;
-  repo: RepoPaths;
+  /** Workspace ids of opts.workspaces, in order. */
+  workspaces: string[];
   close(): Promise<void>;
 }
 
 export async function startServer(opts: StartOptions): Promise<RunningServer> {
-  const repo = await discoverRepo(opts.cwd);
-  const dir = redeDir(repo);
-  fs.mkdirSync(dir, { recursive: true });
-  const store = await Store.open(path.join(dir, 'rede.db'));
-  const rede = new Rede({
-    repo,
-    store,
+  const home = opts.home ?? redeHome();
+  const hub = new Hub({
+    home,
     version: VERSION,
     pollMs: opts.pollMs,
     claimTimeoutMs: opts.claimTimeoutMs,
@@ -81,9 +91,11 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
 
   let lastActivity = Date.now();
   let closing: Promise<void> | null = null;
-  const server = createHttpServer(rede, {
+  hub.onActivity = () => (lastActivity = Date.now());
+  const server = createHttpServer(hub, {
     webDir: opts.webDir,
     allowOrigins: opts.allowOrigins,
+    build: opts.build,
     onActivity: () => (lastActivity = Date.now()),
     onShutdown: () => void close().then(() => opts.onExit?.()),
   });
@@ -96,11 +108,12 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
         resolve();
       });
     });
-  // Reuse the last port of this repo when it is free. An open browser tab then reconnects
-  // by itself after a restart, and a bookmarked review URL keeps working.
-  const lastPortFile = path.join(redeDir(repo), 'last-port');
+  // Reuse the last port when it is free. An open browser tab then reconnects by itself after a
+  // restart, and a review URL keeps working.
+  const lastPortFile = path.join(home, 'last-port');
   let preferred = opts.preferredPort;
-  if (!preferred && opts.writeInfo !== false) {
+  if (!preferred && opts.port === undefined) {
+    preferred = DEFAULT_PORT;
     try {
       const n = Number(fs.readFileSync(lastPortFile, 'utf8').trim());
       if (Number.isInteger(n) && n > 1023 && n < 65536) preferred = n;
@@ -113,14 +126,18 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   } else await listen(opts.port ?? 0);
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : 0;
-  const infoFile = serverInfoPath(repo);
+
+  const workspaces: string[] = [];
+  for (const w of opts.workspaces ?? []) workspaces.push((await hub.register(w)).id);
+
+  const infoFile = serverInfoPath(home);
   if (opts.writeInfo !== false) {
     try {
       fs.writeFileSync(lastPortFile, String(port));
     } catch {
       /* not fatal */
     }
-    const info: ServerInfo = { pid: process.pid, port, startedAt: new Date().toISOString(), version: VERSION, build: opts.build };
+    const info: ServerInfo = { pid: process.pid, port, startedAt: new Date().toISOString(), version: VERSION, build: opts.build, home };
     const tmp = `${infoFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(info, null, 2));
     fs.renameSync(tmp, infoFile);
@@ -130,7 +147,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   const idleMs = opts.idleMs ?? 30 * 60_000;
   if (idleMs > 0) {
     idleTimer = setInterval(() => {
-      if (rede.subscriberCount > 0 || rede.waiterCount > 0) {
+      if (hub.subscriberCount > 0 || hub.waiterCount > 0) {
         lastActivity = Date.now();
         return;
       }
@@ -143,15 +160,9 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     if (closing) return closing;
     closing = (async () => {
       if (idleTimer) clearInterval(idleTimer);
-      rede.close();
+      hub.close();
       if (opts.writeInfo !== false) {
-        const cur = (() => {
-          try {
-            return JSON.parse(fs.readFileSync(infoFile, 'utf8')) as ServerInfo;
-          } catch {
-            return null;
-          }
-        })();
+        const cur = readServerInfo(home);
         if (cur?.pid === process.pid && cur.port === port) {
           try {
             fs.unlinkSync(infoFile);
@@ -160,28 +171,27 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
           }
         }
       }
-      // rede.close() answered waiting agents ("timed out"); let those responses go out first.
+      // hub.close() answered waiting agents ("timed out"); let those responses go out first.
       await new Promise((r) => setTimeout(r, 100));
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
-      store.close();
+      hub.closeStores();
     })();
     return closing;
   }
 
-  return { rede, server, port, repo, close };
+  return { hub, server, port, workspaces, close };
 }
 
 /** Entry point of the detached server process (`rede __serve`). */
-export async function runServerProcess(cwd: string, webDir: string | null): Promise<void> {
+export async function runServerProcess(webDir: string | null, cliPath?: string): Promise<void> {
   const envNum = (k: string) => (process.env[k] ? Number(process.env[k]) : undefined);
   const idleSec = envNum('REDE_IDLE_TIMEOUT');
   const running = await startServer({
-    cwd,
     webDir,
     port: envNum('REDE_PORT'),
     preferredPort: envNum('REDE_PREFERRED_PORT'),
-    build: process.argv[1] ? buildId(process.argv[1]) : undefined,
+    build: buildId(cliPath),
     idleMs: idleSec === undefined ? undefined : idleSec * 1000,
     claimTimeoutMs: envNum('REDE_CLAIM_TIMEOUT') === undefined ? undefined : envNum('REDE_CLAIM_TIMEOUT')! * 1000,
     allowOrigins: (process.env.REDE_ALLOW_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean),
@@ -191,5 +201,5 @@ export async function runServerProcess(cwd: string, webDir: string | null): Prom
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   process.on('SIGHUP', stop);
-  console.log(`[${new Date().toISOString()}] rede ${VERSION} serving ${running.repo.root} on http://127.0.0.1:${running.port} (pid ${process.pid})`);
+  console.log(`[${new Date().toISOString()}] rede ${VERSION} serving ${running.hub.home} on http://127.0.0.1:${running.port} (pid ${process.pid})`);
 }

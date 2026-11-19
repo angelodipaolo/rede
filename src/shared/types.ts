@@ -66,6 +66,18 @@ export interface ReviewSummary {
   updatedAt: string;
   threadCount: number;
   unresolvedCount: number;
+  /** Short description of the change, set by the agent that published the review. Markdown. */
+  summary: string | null;
+  /** Who set the summary and the ready state. */
+  publishedBy: Author | null;
+  /** Last time an agent marked the review ready for human review. */
+  readyAt: string | null;
+  /** Last time the human acknowledged the review (opened it, or marked it seen). */
+  ackedAt: string | null;
+  /** readyAt is set and later than ackedAt: the review waits for the human. Counts in the Dock badge. */
+  awaiting: boolean;
+  /** Open threads whose latest submitted message is from an agent: an answer waits for the human. */
+  agentReplies: number;
 }
 
 export interface Review extends ReviewSummary {
@@ -412,8 +424,71 @@ export interface Health {
   ok: true;
   name: 'rede';
   version: string;
-  repo: RepoInfo;
+  /** Build stamp of the bundle that runs the server (see buildId). */
+  build?: number;
   pid: number;
+  /** REDE_HOME of the server. A client only uses a server of its own home. */
+  home: string;
+  port: number;
+}
+
+// ------------------------------------------------------------- workspaces
+
+/**
+ * One server (the hub) serves every repository and worktree of the user. A workspace is one
+ * worktree (its root). Each workspace keeps its own data in <git-dir>/rede, so reviews of one
+ * worktree never mix with another's. Per-workspace endpoints live under /api/w/<workspace id>/.
+ *
+ * POST   /api/workspaces { root }  -> WorkspaceInfo   registers (or finds) the worktree of root
+ * GET    /api/workspaces           -> WorkspaceInfo[]
+ * DELETE /api/workspaces/:ws       -> { ok: true }    forgets it (its data stays in the repo)
+ * GET    /api/dashboard            -> Dashboard
+ * GET    /api/events               -> SSE of HubEvent
+ */
+export interface WorkspaceInfo {
+  /** Stable, URL-safe: "<worktree dir name>-<6 hex>". */
+  id: string;
+  /** Absolute worktree root. */
+  root: string;
+  /** Worktree directory name. */
+  name: string;
+  /** The repository the worktree belongs to (shared by its linked worktrees). */
+  repo: { name: string; commonDir: string };
+  branch: string | null;
+  /** The worktree no longer exists on disk. */
+  missing: boolean;
+  addedAt: string;
+  lastUsedAt: string;
+}
+
+export interface DashboardWorkspace extends WorkspaceInfo {
+  reviews: ReviewSummary[];
+  agents: AgentPresence[];
+}
+
+export interface Dashboard {
+  workspaces: DashboardWorkspace[];
+  /** Reviews that wait for the human (awaiting). The Dock badge shows this number. */
+  awaiting: number;
+}
+
+export type HubEvent = { type: 'dashboard'; awaiting: number; workspace: string | null; review: string | null };
+
+/** POST /api/w/:ws/reviews/:id/publish. An agent marks the review ready for human review. */
+export interface PublishRequest {
+  summary: string;
+  author: Author;
+  /** Default true. false keeps the summary but takes the review out of "ready". */
+  ready?: boolean;
+}
+
+export interface PublishResponse {
+  review: ReviewSummary;
+  workspace: WorkspaceInfo;
+  /** Opens the review in the Rede app (rede://). */
+  appUrl: string;
+  /** Opens the review in a browser. */
+  webUrl: string;
 }
 
 export interface OpenReviewRequest {
@@ -533,6 +608,8 @@ export interface AgentThread {
   review: { id: string; title: string; spec: ReviewSpec; from: string; to: string | null };
   /** Absolute path of the repo root. */
   repoRoot: string;
+  /** Workspace id of the worktree (see WorkspaceInfo). */
+  workspace?: string;
   /**
    * The diff hunk(s) around the anchor in unified diff text, with line numbers.
    * Null for outdated threads and file-level threads.

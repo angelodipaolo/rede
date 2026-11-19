@@ -4,7 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { Health } from '../shared/types.ts';
-import { redeDir, type RepoPaths } from '../server/git.ts';
+import { redeHome } from '../server/hub.ts';
 import { VERSION } from '../server/errors.ts';
 import { AGENT_COMMANDS } from './guide.ts';
 import { buildId, readServerInfo, serverInfoPath, type ServerInfo } from '../server/server.ts';
@@ -182,11 +182,11 @@ type Probe = { state: 'up' } | { state: 'down' } | { state: 'blocked'; code: str
  * Asks the server in server.json whether it runs. "down" only for a real not-running reason:
  * no server.json, connection refused or reset, or a different process on the port.
  */
-async function probe(repo: RepoPaths, info: ServerInfo | null): Promise<Probe> {
+async function probe(home: string, info: ServerInfo | null): Promise<Probe> {
   if (!info) return { state: 'down' };
   try {
     const h = await request<Health>(info.port, 'GET', '/api/health', undefined, 3000);
-    return h.name === 'rede' && h.pid === info.pid && h.repo.root === repo.root ? { state: 'up' } : { state: 'down' };
+    return h.name === 'rede' && h.pid === info.pid && h.home === home ? { state: 'up' } : { state: 'down' };
   } catch (e) {
     const code = errCode(e);
     if (code && BLOCKED_CONNECT.has(code)) return { state: 'blocked', code };
@@ -204,10 +204,10 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Returns the running server for this repo, or null when none runs. Never starts one. */
-export async function findServer(repo: RepoPaths): Promise<ServerInfo | null> {
-  const info = readServerInfo(repo);
-  const p = await probe(repo, info);
+/** Returns the running server (the hub of this REDE_HOME), or null when none runs. Never starts one. */
+export async function findServer(home: string = redeHome()): Promise<ServerInfo | null> {
+  const info = readServerInfo(home);
+  const p = await probe(home, info);
   if (p.state === 'up') return info;
   if (p.state === 'down') return null;
   if (p.state === 'blocked') {
@@ -251,7 +251,7 @@ export function serverIsOlder(server: Pick<ServerInfo, 'version' | 'build'>, cli
 
 function cannotWrite(dir: string, code: string): RedeError {
   return new RedeError(
-    `no Rede server runs for this repo, and this command may not start one: it cannot write ${dir} (${code}). ${sandboxAdvice()}`,
+    `no Rede server runs, and this command may not start one: it cannot write ${dir} (${code}). ${sandboxAdvice()}`,
   );
 }
 
@@ -268,7 +268,7 @@ function lockOwner(lock: string): number | null {
  * Takes the start lock. Returns true when taken, or the server another command started meanwhile.
  * A lock whose owner process is gone is removed at once. Write errors (sandbox) are thrown.
  */
-async function takeLock(repo: RepoPaths, lock: string, isCurrent: (i: ServerInfo) => boolean, waitMs: number): Promise<true | ServerInfo | null> {
+async function takeLock(home: string, lock: string, isCurrent: (i: ServerInfo) => boolean, waitMs: number): Promise<true | ServerInfo | null> {
   const deadline = Date.now() + waitMs;
   for (;;) {
     try {
@@ -277,7 +277,7 @@ async function takeLock(repo: RepoPaths, lock: string, isCurrent: (i: ServerInfo
     } catch (e) {
       if (errCode(e) !== 'EEXIST') throw e;
     }
-    const info = await findServer(repo);
+    const info = await findServer(home);
     if (info && isCurrent(info)) return info;
     const owner = lockOwner(lock);
     let stale = owner !== null && !alive(owner);
@@ -307,17 +307,17 @@ async function takeLock(repo: RepoPaths, lock: string, isCurrent: (i: ServerInfo
  * older build is stopped and replaced on the same port (an open browser tab reconnects), but only
  * when this command can take the start lock: a sandboxed command keeps using the running server.
  */
-export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<ServerInfo> {
+export async function ensureServer(cliPath: string, home: string = redeHome(), runtime: { execPath: string; env?: NodeJS.ProcessEnv } = { execPath: process.execPath }): Promise<ServerInfo> {
   const cli = { version: VERSION, build: buildId(cliPath) };
   const isCurrent = (i: ServerInfo) => !serverIsOlder(i, cli);
-  const existing = await findServer(repo);
+  const existing = await findServer(home);
   if (existing && isCurrent(existing)) return existing;
-  const dir = redeDir(repo);
+  const dir = home;
   const lock = path.join(dir, 'start.lock');
   let got: true | ServerInfo | null;
   try {
     fs.mkdirSync(dir, { recursive: true });
-    got = await takeLock(repo, lock, isCurrent, 20_000);
+    got = await takeLock(home, lock, isCurrent, 20_000);
   } catch (e) {
     const code = errCode(e);
     if (!code || !NO_WRITE.has(code)) throw e;
@@ -333,27 +333,27 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
     );
   }
   try {
-    const again = await findServer(repo);
+    const again = await findServer(home);
     if (again && isCurrent(again)) return again;
     let preferredPort: number | undefined;
     if (again) {
       preferredPort = again.port;
-      await stopServer(repo);
+      await stopServer(home);
     }
-    const stale = readServerInfo(repo);
+    const stale = readServerInfo(home);
     if (stale) {
       try {
-        fs.unlinkSync(serverInfoPath(repo));
+        fs.unlinkSync(serverInfoPath(home));
       } catch {
         /* gone */
       }
     }
     const logFile = path.join(dir, 'server.log');
     const log = fs.openSync(logFile, 'a');
-    const env = { ...process.env };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...runtime.env, REDE_HOME: home };
     if (preferredPort) env.REDE_PREFERRED_PORT = String(preferredPort);
-    const child = spawn(process.execPath, [cliPath, '__serve'], {
-      cwd: repo.root,
+    const child = spawn(runtime.execPath, [cliPath, '__serve'], {
+      cwd: home,
       detached: true,
       stdio: ['ignore', log, log],
       env,
@@ -363,8 +363,8 @@ export async function ensureServer(repo: RepoPaths, cliPath: string): Promise<Se
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       await sleep(80);
-      const info = readServerInfo(repo);
-      if (info && info.pid === child.pid && (await probe(repo, info)).state === 'up') return info;
+      const info = readServerInfo(home);
+      if (info && info.pid === child.pid && (await probe(home, info)).state === 'up') return info;
       if (child.exitCode !== null) break;
     }
     throw new RedeError(`the Rede server did not start. ${lastLine(logFile)}See ${logFile}.`);
@@ -386,8 +386,8 @@ function lastLine(file: string): string {
   }
 }
 
-export async function stopServer(repo: RepoPaths): Promise<ServerInfo | null> {
-  const info = await findServer(repo);
+export async function stopServer(home: string = redeHome()): Promise<ServerInfo | null> {
+  const info = await findServer(home);
   if (!info) return null;
   try {
     await request(info.port, 'POST', '/api/shutdown', {}, 3000);

@@ -332,14 +332,16 @@ const CLI = path.resolve(__dirname, '..', 'dist', 'cli.js');
 
 describe.skipIf(!fs.existsSync(CLI))('inbox and export (built CLI)', () => {
   let repo: TempRepo;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rede-hub-'));
+  const env = { ...process.env, CLAUDECODE: '', REDE_AGENT: '', REDE_HOME: home, REDE_PORT: '0' };
   afterEach(() => {
-    spawnSync(process.execPath, [CLI, 'stop'], { cwd: repo.dir });
+    spawnSync(process.execPath, [CLI, 'stop'], { cwd: repo.dir, env });
     repo?.cleanup();
   });
   const run = (args: string[], input?: string) =>
     new Promise<{ code: number; out: string; err: string; ms: number }>((resolve) => {
       const t0 = Date.now();
-      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...process.env, CLAUDECODE: '', REDE_AGENT: '' } }, (e, out, err) =>
+      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env }, (e, out, err) =>
         resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out, err, ms: Date.now() - t0 }),
       );
       child.stdin?.end(input ?? '');
@@ -356,8 +358,9 @@ describe.skipIf(!fs.existsSync(CLI))('inbox and export (built CLI)', () => {
     // An agent's own thread is not feedback for it.
     expect((await run(['inbox'])).out).toBe('No feedback is waiting.\n');
     // The human comments in the browser (HTTP).
-    const port = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'rede', 'server.json'), 'utf8')).port as number;
-    const res = await fetch(`http://127.0.0.1:${port}/api/reviews/working/threads`, {
+    const port = JSON.parse(fs.readFileSync(path.join(home, 'server.json'), 'utf8')).port as number;
+    const ws = ((await (await fetch(`http://127.0.0.1:${port}/api/workspaces`)).json()) as { id: string; root: string }[]).find((w) => w.root === repo.dir)!.id;
+    const res = await fetch(`http://127.0.0.1:${port}/api/w/${ws}/reviews/working/threads`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ anchor: { path: 'a.ts', side: 'new', startLine: 3, endLine: 3 }, body: 'Why three?', author: { kind: 'human', name: 'you' } }),

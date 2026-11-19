@@ -1,13 +1,22 @@
 import { execFile, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ServerEvent, Thread, WaitResponse } from '../src/shared/types.ts';
 import { startServer, type RunningServer } from '../src/server/server.ts';
 import { lines, TempRepo } from './helpers.ts';
 
+/** Workspace of the test repo. Per-workspace paths ("/api/reviews") are sent to /api/w/<ws>/. */
+let WS = '';
+const GLOBAL = /^\/api\/(health|workspaces|dashboard|events|shutdown|w\/)/;
+export function wsPath(p: string): string {
+  return p.startsWith('/api/') && !GLOBAL.test(p) ? `/api/w/${WS}/${p.slice(5)}` : p;
+}
+
 function req<T = any>(port: number, method: string, p: string, body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; json: T }> {
+  p = wsPath(p);
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
     const r = http.request({ host: '127.0.0.1', port, method, path: p, headers: { 'content-type': 'application/json', ...headers } }, (res) => {
@@ -21,6 +30,7 @@ function req<T = any>(port: number, method: string, p: string, body?: unknown, h
 }
 
 function sse(port: number, p: string) {
+  p = wsPath(p);
   const events: ServerEvent[] = [];
   let raw = '';
   const r = http.get({ host: '127.0.0.1', port, path: p }, (res) => {
@@ -54,10 +64,12 @@ function sse(port: number, p: string) {
 describe('HTTP end to end', () => {
   let repo: TempRepo;
   let srv: RunningServer | null = null;
+  let home = '';
   afterEach(async () => {
     await srv?.close();
     srv = null;
     repo?.cleanup();
+    if (home) fs.rmSync(home, { recursive: true, force: true });
   });
 
   async function setup(extra = {}) {
@@ -65,7 +77,9 @@ describe('HTTP end to end', () => {
     repo.write('app.ts', lines(20));
     repo.commit();
     repo.write('app.ts', lines(20).replace('line 4\n', 'line four\n'));
-    srv = await startServer({ cwd: repo.dir, webDir: null, pollMs: 100, idleMs: 0, presenceLingerMs: 0, ...extra });
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'rede-home-'));
+    srv = await startServer({ home, workspaces: [repo.dir], port: 0, webDir: null, pollMs: 100, idleMs: 0, presenceLingerMs: 0, ...extra });
+    WS = srv.workspaces[0]!;
     return srv.port;
   }
 
@@ -76,7 +90,7 @@ describe('HTTP end to end', () => {
     expect((await req(port, 'GET', '/api/health', undefined, { host: 'evil.example:80' })).status).toBe(403);
     expect((await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } }, { origin: 'http://evil.example' })).status).toBe(403);
     expect((await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } }, { origin: `http://127.0.0.1:${port}` })).status).toBe(200);
-    const info = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'rede', 'server.json'), 'utf8'));
+    const info = JSON.parse(fs.readFileSync(path.join(home, 'server.json'), 'utf8'));
     expect(info).toMatchObject({ pid: process.pid, port });
     const page = await new Promise<string>((resolve) => http.get({ host: '127.0.0.1', port, path: '/r/working' }, (res) => {
       let t = '';
@@ -166,9 +180,9 @@ describe('HTTP end to end', () => {
     await req(port, 'POST', '/api/reviews', { spec: { kind: 'working' } });
     const streams = Array.from({ length: 20 }, () => sse(port, '/api/reviews/working/events'));
     await Promise.all(streams.map((s) => s.waitFor((e) => e.type === 'agents')));
-    expect(srv!.rede.subscriberCount).toBe(20);
+    expect(srv!.hub.subscriberCount).toBe(20);
     const waits = Array.from({ length: 5 }, (_, i) => {
-      const r = http.get({ host: '127.0.0.1', port, path: `/api/agent/wait?agent=a${i}&timeout=600` });
+      const r = http.get({ host: '127.0.0.1', port, path: wsPath(`/api/agent/wait?agent=a${i}&timeout=600`) });
       r.on('error', () => {});
       return r;
     });
@@ -176,10 +190,10 @@ describe('HTTP end to end', () => {
       for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 20));
       return f();
     };
-    expect(await until(() => srv!.rede.waiterCount === 5)).toBe(true);
+    expect(await until(() => srv!.hub.waiterCount === 5)).toBe(true);
     for (const s of streams) s.close();
     for (const w of waits) w.destroy();
-    expect(await until(() => srv!.rede.subscriberCount === 0 && srv!.rede.waiterCount === 0)).toBe(true);
+    expect(await until(() => srv!.hub.subscriberCount === 0 && srv!.hub.waiterCount === 0)).toBe(true);
   });
 
   it('persists threads across a restart', async () => {
@@ -191,7 +205,7 @@ describe('HTTP end to end', () => {
       author: { kind: 'human', name: 'you' },
     });
     await srv!.close();
-    srv = await startServer({ cwd: repo.dir, webDir: null, idleMs: 0 });
+    srv = await startServer({ home, workspaces: [repo.dir], port: 0, webDir: null, idleMs: 0 });
     const r = await req(srv.port, 'GET', '/api/reviews/working');
     expect(r.json.threads.map((t: Thread) => t.messages[0]!.body)).toEqual(['File-level note']);
     const pending = await req(srv.port, 'GET', '/api/agent/threads?state=pending');
@@ -221,14 +235,21 @@ const CLI = path.resolve(__dirname, '..', 'dist', 'cli.js');
 
 describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
   let repo: TempRepo;
+  // Never the user's own hub: a private home and a random port.
+  let home = '';
+  const baseEnv = () => ({ ...process.env, CLAUDECODE: '', REDE_AGENT: '', REDE_HOME: home, REDE_PORT: '0', REDE_OPEN: 'browser' });
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'rede-hub-'));
+  });
   afterEach(() => {
-    spawnSync(process.execPath, [CLI, 'stop'], { cwd: repo.dir });
+    spawnSync(process.execPath, [CLI, 'stop'], { cwd: repo.dir, env: baseEnv() });
     repo?.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   const run = (args: string[], input?: string, env: Record<string, string> = {}) =>
     new Promise<{ code: number; out: string; err: string }>((resolve) => {
-      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...process.env, CLAUDECODE: '', REDE_AGENT: '', ...env } }, (e, out, err) =>
+      const child = execFile(process.execPath, [CLI, ...args], { cwd: repo.dir, env: { ...baseEnv(), ...env } }, (e, out, err) =>
         resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out, err }),
       );
       child.stdin?.end(input ?? '');
@@ -239,7 +260,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     repo.write('a.txt', 'x\n');
     repo.commit();
     await run(['list']);
-    const file = path.join(repo.dir, '.git', 'rede', 'server.json');
+    const file = path.join(home, 'server.json');
     const first = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(first.build).toBeGreaterThan(0);
     const waiting = run(['wait', '--timeout', '20']);
@@ -254,7 +275,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     expect(w.out).toContain('rede wait');
   }, 30_000);
 
-  const infoFile = () => path.join(repo.dir, '.git', 'rede', 'server.json');
+  const infoFile = () => path.join(home, 'server.json');
   const readInfo = () => JSON.parse(fs.readFileSync(infoFile(), 'utf8'));
 
   it('never replaces a server started by a newer build', async () => {
@@ -291,18 +312,17 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     repo = new TempRepo();
     repo.write('a.txt', 'x\n');
     repo.commit();
-    const gitDir = path.join(repo.dir, '.git');
-    fs.chmodSync(gitDir, 0o555);
+    fs.chmodSync(home, 0o555);
     const t0 = Date.now();
     let r;
     try {
       r = await run(['wait', '--timeout', '5']);
     } finally {
-      fs.chmodSync(gitDir, 0o755);
+      fs.chmodSync(home, 0o755);
     }
     expect(Date.now() - t0).toBeLessThan(4000);
     expect(r.code).toBe(1);
-    expect(r.err).toContain('no Rede server runs for this repo, and this command may not start one');
+    expect(r.err).toContain('no Rede server runs, and this command may not start one');
     expect(r.err).toContain('(EACCES)');
     expect(r.err).not.toContain('start.lock');
   }, 30_000);
@@ -312,8 +332,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     repo.write('a.txt', 'x\n');
     repo.commit();
     const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
-    fs.mkdirSync(path.join(repo.dir, '.git', 'rede'), { recursive: true });
-    fs.writeFileSync(path.join(repo.dir, '.git', 'rede', 'start.lock'), String(dead));
+    fs.writeFileSync(path.join(home, 'start.lock'), String(dead));
     const t0 = Date.now();
     const r = await run(['threads']);
     expect(r.code).toBe(0);
@@ -326,7 +345,7 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     repo.commit();
     repo.write('src/x.ts', lines(10).replace('line 2\n', 'line two\n'));
     const open = await run(['--no-open']);
-    expect(open.out).toMatch(/http:\/\/127\.0\.0\.1:\d+\/r\/working/);
+    expect(open.out).toMatch(/http:\/\/127\.0\.0\.1:\d+\/w\/[\w.-]+\/r\/working/);
 
     const body = "Multi-line `code`\n\n```ts\nconst a = `x`;\n```\n$HOME stays literal\n";
     const c = await run(['comment', 'src/x.ts:2', '--as', 'codex'], body);
@@ -343,7 +362,8 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     expect(show.out).toContain('$HOME stays literal');
 
     // A human question, then wait.
-    const port = JSON.parse(fs.readFileSync(path.join(repo.dir, '.git', 'rede', 'server.json'), 'utf8')).port;
+    const port = JSON.parse(fs.readFileSync(path.join(home, 'server.json'), 'utf8')).port;
+    WS = /\/w\/([\w.-]+)\/r\//.exec(open.out)![1]!;
     await req(port, 'POST', '/api/threads/1/messages', { body: 'Is this right?', author: { kind: 'human', name: 'you' } });
     const w = await run(['wait', '--timeout', '5'], undefined, { CLAUDECODE: '1' });
     expect(w.out).toContain('Thread #1');

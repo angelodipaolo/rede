@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ReviewSummary } from '../../../src/shared/types.ts';
-import { api } from '../api.ts';
+import { api, reviewHref, workspace, wsHref } from '../api.ts';
 import { subscribe, useTopics } from '../bus.ts';
 import { setObserverRoot } from '../io.ts';
 import { installKeys } from '../keys.ts';
@@ -178,7 +178,7 @@ export function ReviewList() {
       {list && list.length > 0 && (
         <ul>
           <li>
-            <a href="/history" class="rl-hist">
+            <a href={wsHref('/history')} class="rl-hist">
               <span class="rl-title">
                 <Icon name="history" size={15} /> History
               </span>
@@ -187,7 +187,7 @@ export function ReviewList() {
           </li>
           {list.map((r) => (
             <li key={r.id}>
-              <a href={`/r/${encodeURIComponent(r.id)}`}>
+              <a href={reviewHref(workspace(), r.id)}>
                 <span class="rl-title">{r.title}</span>
                 <span class="muted">
                   {r.unresolvedCount} unresolved · {r.threadCount} threads · updated {relTime(r.updatedAt)}

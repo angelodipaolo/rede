@@ -13,6 +13,11 @@ export interface ReviewRow {
   createdAt: string;
   updatedAt: string;
   openedAt: string;
+  summary: string | null;
+  publishedKind: AuthorKind | null;
+  publishedName: string | null;
+  readyAt: string | null;
+  ackedAt: string | null;
 }
 
 export interface ThreadRow {
@@ -240,6 +245,12 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['threads', 'outdated_reason', 'outdated_reason TEXT'],
   ['batches', 'head', 'head TEXT'],
   ['batches', 'branch', 'branch TEXT'],
+  // Publishing: an agent's change summary and the ready-for-review state, and the human's acknowledgement.
+  ['reviews', 'summary', 'summary TEXT'],
+  ['reviews', 'published_kind', 'published_kind TEXT'],
+  ['reviews', 'published_name', 'published_name TEXT'],
+  ['reviews', 'ready_at', 'ready_at TEXT'],
+  ['reviews', 'acked_at', 'acked_at TEXT'],
 ];
 
 function reviewFromRow(r: Row): ReviewRow {
@@ -250,6 +261,11 @@ function reviewFromRow(r: Row): ReviewRow {
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
     openedAt: String(r.opened_at),
+    summary: (r.summary as string | null | undefined) ?? null,
+    publishedKind: ((r.published_kind as string | null | undefined) ?? null) as AuthorKind | null,
+    publishedName: (r.published_name as string | null | undefined) ?? null,
+    readyAt: (r.ready_at as string | null | undefined) ?? null,
+    ackedAt: (r.acked_at as string | null | undefined) ?? null,
   };
 }
 
@@ -319,6 +335,28 @@ export class Store {
 
   touchReviewUpdated(id: string, now: string): void {
     this.db.prepare('UPDATE reviews SET updated_at = ? WHERE id = ?').run(now, id);
+  }
+
+  /** Sets the summary and the ready state. ready=false clears ready_at. */
+  publishReview(id: string, summary: string, author: { kind: AuthorKind; name: string }, ready: boolean, now: string): void {
+    this.db
+      .prepare('UPDATE reviews SET summary = ?, published_kind = ?, published_name = ?, ready_at = ?, updated_at = ? WHERE id = ?')
+      .run(summary, author.kind, author.name, ready ? now : null, now, id);
+  }
+
+  ackReview(id: string, now: string): void {
+    this.db.prepare('UPDATE reviews SET acked_at = ? WHERE id = ?').run(now, id);
+  }
+
+  /** Open threads whose latest submitted message is from an agent. */
+  agentReplyCount(reviewId: string): number {
+    const r = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM threads t WHERE t.review_id = ? AND t.resolved = 0 AND t.note_only = 0 AND
+           (SELECT m.author_kind FROM messages m WHERE m.thread_id = t.id AND m.pending = 0 ORDER BY m.id DESC LIMIT 1) = 'agent'`,
+      )
+      .get(reviewId) as Row;
+    return Number(r.n);
   }
 
   threadCounts(reviewId: string): { threadCount: number; unresolvedCount: number } {

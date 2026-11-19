@@ -258,6 +258,10 @@ export class Rede {
   private closed = false;
   /** Called on any API activity; the server uses it for idle shutdown. */
   onActivity: () => void = () => {};
+  /** Called when a review or its threads changed (the hub refreshes the dashboard). */
+  onChange: (reviewId: string | null) => void = () => {};
+  /** Id of this worktree in the hub (see WorkspaceInfo). */
+  workspaceId = '';
 
   constructor(opts: RedeOptions) {
     this.repo = opts.repo;
@@ -313,8 +317,44 @@ export class Rede {
 
   // ================================================================ reviews
 
-  private summary(r: ReviewRow): ReviewSummary {
-    return { id: r.id, spec: r.spec, title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt, ...this.store.threadCounts(r.id) };
+  summary(r: ReviewRow): ReviewSummary {
+    return {
+      id: r.id,
+      spec: r.spec,
+      title: r.title,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      ...this.store.threadCounts(r.id),
+      summary: r.summary,
+      publishedBy: r.publishedKind && r.publishedName ? { kind: r.publishedKind, name: r.publishedName } : null,
+      readyAt: r.readyAt,
+      ackedAt: r.ackedAt,
+      awaiting: !!r.readyAt && (!r.ackedAt || r.ackedAt < r.readyAt),
+      agentReplies: this.store.agentReplyCount(r.id),
+    };
+  }
+
+  /** An agent sets the change summary and marks the review ready for human review. */
+  publish(id: string, req: { summary?: unknown; author?: unknown; ready?: unknown }): ReviewSummary {
+    this.requireReview(id);
+    if (typeof req?.summary !== 'string') throw badRequest('Missing summary.');
+    const summary = req.summary.trim();
+    if (!summary) throw badRequest('The summary is empty.');
+    if (summary.length > 20_000) throw badRequest('The summary is too long (20,000 characters at most).');
+    const author = this.validateAuthor(req.author);
+    this.store.publishReview(id, summary, author, req.ready !== false, nowIso());
+    this.onChange(id);
+    return this.summary(this.store.getReview(id)!);
+  }
+
+  /** The human has seen the review: it no longer waits (until an agent publishes it again). */
+  ack(id: string): ReviewSummary {
+    const r = this.requireReview(id);
+    if (r.readyAt && (!r.ackedAt || r.ackedAt < r.readyAt)) {
+      this.store.ackReview(id, nowIso());
+      this.onChange(id);
+    }
+    return this.summary(this.store.getReview(id)!);
   }
 
   listReviews(): ReviewSummary[] {
@@ -330,7 +370,9 @@ export class Rede {
   /** Validates and normalizes a spec, then creates or reuses its review. */
   async openReview(spec: ReviewSpec): Promise<ReviewSummary> {
     const { id, title, spec: norm } = await this.normalizeSpec(spec);
+    const existed = !!this.store.getReview(id);
     const row = this.store.upsertReview(id, norm, title, nowIso());
+    if (!existed) this.onChange(id);
     return this.summary(row);
   }
 
@@ -1129,6 +1171,7 @@ export class Rede {
   // ================================================================ events
 
   private broadcast(reviewId: string | null, make: (sub: Subscriber) => ServerEvent | null, scope?: ReviewScope): void {
+    this.onChange(reviewId);
     for (const sub of this.subscribers) {
       if (reviewId !== null && sub.reviewId !== reviewId) continue;
       if (scope && sub.scope !== scope) continue;
@@ -1146,6 +1189,7 @@ export class Rede {
   private emitThread(tid: number, state?: ReviewState): void {
     const t = this.store.getThread(tid);
     if (!t) return;
+    this.onChange(t.reviewId);
     const subs = [...this.subscribers].filter((s) => s.reviewId === t.reviewId);
     if (!subs.length) return;
     const st = state ?? this.states.get(t.reviewId) ?? null;
@@ -1350,6 +1394,7 @@ export class Rede {
       thread,
       review: { id: st.review.id, title: st.review.title, spec: st.review.spec, from: st.resolved.from, to: st.resolved.to },
       repoRoot: this.repo.root,
+      workspace: this.workspaceId || undefined,
       diffContext,
       batchId: batchOfLatest(msgs),
     };

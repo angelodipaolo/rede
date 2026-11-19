@@ -11,11 +11,14 @@ import type {
   ReviewScope,
   ReviewSpec,
   ReviewSummary,
+  PublishResponse,
   Thread,
   WaitResponse,
+  WorkspaceInfo,
 } from '../shared/types.ts';
 import { VERSION } from '../server/errors.ts';
 import { currentBranch, defaultBranch, discoverRepo, git, type RepoPaths } from '../server/git.ts';
+import { appUrl, webUrl } from '../server/http.ts';
 import { ApiFailure, detectAgentName, ensureServer, findServer, inCodex, request, stopServer, streamTo } from './client.ts';
 import { formatAgentThread, formatDiff, formatThreadLine, formatWait, location } from './format.ts';
 import { GUIDE, setup } from './guide.ts';
@@ -33,12 +36,16 @@ Open a review in the browser:
   rede <base>           this branch against <base> (merge-base -> working tree)
   rede <a>..<b>         a range of commits
   rede -c <rev>         one commit (also: rede commit <rev>)
-  --no-open               print the URL, do not open a browser
+  --no-open               print the URL, do not open it
+  --browser               open in the browser even when the Rede app is installed
 
 Server:
   rede status | list | stop
 
 Agents (default output is markdown for an LLM; --json for raw JSON):
+  rede publish [-m <summary>] [<base>|<a>..<b>|-c <rev>|-w] [--review <id>] [--not-ready]
+                                       give the change a short summary, mark it ready for
+                                       human review, print the review URL (summary on stdin without -m)
   rede inbox                           print the feedback waiting for you now; never blocks
   rede wait [--timeout <sec>]          block until a comment needs an answer (watch mode)
   rede reply <id> [-m <text>] [--resolve]   (reads stdin when -m is absent)
@@ -155,24 +162,44 @@ function openBrowser(url: string): void {
 interface Ctx {
   repo: RepoPaths;
   port: number;
+  workspace: WorkspaceInfo;
+  /** Path prefix of this worktree's API: /api/w/<workspace id>. */
+  base: string;
 }
 
-async function connect(): Promise<Ctx> {
-  const repo = await discoverRepo(process.cwd());
-  const info = await ensureServer(repo, CLI_PATH);
-  return { repo, port: info.port };
+/** Finds the worktree, makes sure the hub runs, and registers the worktree with it. */
+async function connect(cwd = process.cwd()): Promise<Ctx> {
+  const repo = await discoverRepo(cwd);
+  const info = await ensureServer(CLI_PATH);
+  const workspace = await request<WorkspaceInfo>(info.port, 'POST', '/api/workspaces', { root: repo.root });
+  return { repo, port: info.port, workspace, base: `/api/w/${encodeURIComponent(workspace.id)}` };
 }
 
-const api = <T>(c: Ctx, method: string, p: string, body?: unknown) => request<T>(c.port, method, p, body);
+/** A request to this worktree's API. `p` is relative to the workspace, e.g. "/reviews". */
+const api = <T>(c: Ctx, method: string, p: string, body?: unknown) => request<T>(c.port, method, c.base + p, body);
+
+/** Where the review opens: the Rede app when it is installed, else the browser. */
+function appInstalled(): boolean {
+  if (process.env.REDE_OPEN === 'browser') return false;
+  if (process.env.REDE_OPEN === 'app') return true;
+  if (process.platform !== 'darwin') return false;
+  return APP_PATHS().some((p) => fs.existsSync(p));
+}
+
+const APP_PATHS = () => ['/Applications/Rede.app', path.join(process.env.HOME ?? '', 'Applications', 'Rede.app')];
+
+function reviewUrls(c: Ctx, id: string): { appUrl: string; webUrl: string } {
+  return { appUrl: appUrl(c.workspace.id, id), webUrl: webUrl(c.port, c.workspace.id, id) };
+}
 const enc = encodeURIComponent;
 
 /** --review, else the most recently opened review, else the working review (created). */
 async function pickReview(c: Ctx, args: Args): Promise<string> {
   const given = str(args, '--review');
   if (given) return given;
-  const list = await api<ReviewSummary[]>(c, 'GET', '/api/reviews');
+  const list = await api<ReviewSummary[]>(c, 'GET', '/reviews');
   if (list[0]) return list[0].id;
-  const r = await api<ReviewSummary>(c, 'POST', '/api/reviews', { spec: { kind: 'working' } });
+  const r = await api<ReviewSummary>(c, 'POST', '/reviews', { spec: { kind: 'working' } });
   return r.id;
 }
 
@@ -191,43 +218,101 @@ async function cmdOpen(args: Args, spec: ReviewSpec | null): Promise<void> {
       }
     }
   }
-  const info = await ensureServer(repo, CLI_PATH);
-  const c = { repo, port: info.port };
-  const r = await api<ReviewSummary>(c, 'POST', '/api/reviews', { spec });
-  const url = `http://127.0.0.1:${info.port}/r/${enc(r.id)}`;
-  if (!has(args, '--no-open')) openBrowser(url);
-  out(`${r.title}\n${url}`);
+  const c = await connect(repo.root);
+  const r = await api<ReviewSummary>(c, 'POST', '/reviews', { spec });
+  const urls = reviewUrls(c, r.id);
+  const inApp = !has(args, '--browser') && appInstalled();
+  if (!has(args, '--no-open')) openBrowser(inApp ? urls.appUrl : urls.webUrl);
+  out(`${r.title}\n${urls.webUrl}${inApp ? `\n${urls.appUrl}` : ''}`);
+}
+
+/**
+ * The review an agent publishes by default: on a branch other than the default branch, the branch
+ * against the default branch (it includes uncommitted changes, like a pull request with local
+ * fixes); else the uncommitted changes.
+ */
+async function publishSpec(repo: RepoPaths, args: Args): Promise<ReviewSpec> {
+  const commit = str(args, '-c', '--commit');
+  if (commit) return { kind: 'commit', rev: commit };
+  const pos = args.pos[1];
+  if (pos) return rangeSpec(pos) ?? { kind: 'branch', base: pos, head: (await currentBranch(repo.root)) ?? 'HEAD' };
+  if (has(args, '-w', '--working')) return { kind: 'working' };
+  const branch = await currentBranch(repo.root);
+  if (branch) {
+    const def = await defaultBranch(repo.root);
+    if (def && def !== branch && def !== `origin/${branch}`) return { kind: 'branch', base: def, head: branch };
+  }
+  return { kind: 'working' };
+}
+
+async function cmdPublish(args: Args): Promise<void> {
+  const summary = await messageBody(args);
+  const name = agentName(args);
+  const repo = await discoverRepo(process.cwd());
+  const c = await connect(repo.root);
+  let id = str(args, '--review');
+  if (!id) id = (await api<ReviewSummary>(c, 'POST', '/reviews', { spec: await publishSpec(repo, args) })).id;
+  const r = await api<PublishResponse>(c, 'POST', `/reviews/${enc(id)}/publish`, { summary, author: { kind: 'agent', name }, ready: !has(args, '--not-ready') });
+  if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
+  const primary = appInstalled() ? r.appUrl : r.webUrl;
+  if (has(args, '--open')) openBrowser(primary);
+  const lines = [
+    r.review.awaiting ? `Published "${r.review.title}" (${c.workspace.name}) for human review as ${name}.` : `Updated the summary of "${r.review.title}" (${c.workspace.name}); it is not marked ready.`,
+    `Review URL: ${primary}`,
+  ];
+  if (primary !== r.webUrl) lines.push(`Browser URL: ${r.webUrl}`);
+  lines.push('Put the review URL in your final response. When the user has reviewed, `rede inbox` prints their feedback.');
+  out(lines.join('\n'));
 }
 
 async function cmdStatus(args: Args): Promise<void> {
-  const repo = await discoverRepo(process.cwd());
-  const info = await findServer(repo);
+  const info = await findServer();
+  let repo: RepoPaths | null = null;
+  try {
+    repo = await discoverRepo(process.cwd());
+  } catch {
+    /* outside a repository: hub status only */
+  }
   if (!info) {
     if (has(args, '--json')) return out(JSON.stringify({ running: false }));
-    return out(`Rede server: not running (${repo.root}).`);
+    return out('Rede server: not running.');
   }
-  const c = { repo, port: info.port };
-  const [reviews, agents] = await Promise.all([api<ReviewSummary[]>(c, 'GET', '/api/reviews'), api<AgentPresence[]>(c, 'GET', '/api/agents')]);
-  if (has(args, '--json')) return out(JSON.stringify({ running: true, server: info, reviews, agents }, null, 2));
-  const lines = [`Rede server: running, pid ${info.pid}, http://127.0.0.1:${info.port}, since ${info.startedAt}`, `Repo: ${repo.root}`];
-  lines.push(reviews.length ? 'Reviews:' : 'Reviews: none');
-  for (const r of reviews) lines.push(`  ${r.id}  ${r.title}  (${r.threadCount} threads, ${r.unresolvedCount} open)  http://127.0.0.1:${info.port}/r/${enc(r.id)}`);
-  lines.push(agents.length ? `Agents: ${agents.map((a) => `${a.name} (${a.state})`).join(', ')}` : 'Agents: none connected');
+  const workspaces = await request<WorkspaceInfo[]>(info.port, 'GET', '/api/workspaces');
+  const mine = repo ? workspaces.find((w) => w.root === repo!.root) : undefined;
+  let reviews: ReviewSummary[] = [];
+  let agents: AgentPresence[] = [];
+  if (mine) {
+    const base = `/api/w/${enc(mine.id)}`;
+    [reviews, agents] = await Promise.all([
+      request<ReviewSummary[]>(info.port, 'GET', `${base}/reviews`),
+      request<AgentPresence[]>(info.port, 'GET', `${base}/agents`),
+    ]);
+  }
+  if (has(args, '--json')) return out(JSON.stringify({ running: true, server: info, workspaces, workspace: mine ?? null, reviews, agents }, null, 2));
+  const lines = [
+    `Rede server: running, pid ${info.pid}, http://127.0.0.1:${info.port}, since ${info.startedAt}`,
+    `Workspaces: ${workspaces.length} (${info.home ?? ''})`,
+  ];
+  if (repo) lines.push(`This worktree: ${repo.root}${mine ? ` (workspace ${mine.id})` : ' (not registered yet; run rede)'}`);
+  if (mine) {
+    lines.push(reviews.length ? 'Reviews:' : 'Reviews: none');
+    for (const r of reviews) lines.push(`  ${r.id}  ${r.title}  (${r.threadCount} threads, ${r.unresolvedCount} open${r.awaiting ? ', ready for review' : ''})  ${webUrl(info.port, mine.id, r.id)}`);
+    lines.push(agents.length ? `Agents: ${agents.map((a) => `${a.name} (${a.state})`).join(', ')}` : 'Agents: none connected');
+  }
   out(lines.join('\n'));
 }
 
 async function cmdList(args: Args): Promise<void> {
   const c = await connect();
-  const reviews = await api<ReviewSummary[]>(c, 'GET', '/api/reviews');
+  const reviews = await api<ReviewSummary[]>(c, 'GET', '/reviews');
   if (has(args, '--json')) return out(JSON.stringify(reviews, null, 2));
   if (!reviews.length) return out('No reviews yet. Run `rede` to open one.');
-  out(reviews.map((r) => `${r.id}  ${r.title}  (${r.threadCount} threads, ${r.unresolvedCount} open)  http://127.0.0.1:${c.port}/r/${enc(r.id)}`).join('\n'));
+  out(reviews.map((r) => `${r.id}  ${r.title}  (${r.threadCount} threads, ${r.unresolvedCount} open)  ${reviewUrls(c, r.id).webUrl}`).join('\n'));
 }
 
 async function cmdStop(): Promise<void> {
-  const repo = await discoverRepo(process.cwd());
-  const info = await stopServer(repo);
-  out(info ? `Stopped the Rede server (pid ${info.pid}).` : 'No Rede server is running for this repo.');
+  const info = await stopServer();
+  out(info ? `Stopped the Rede server (pid ${info.pid}).` : 'No Rede server is running.');
 }
 
 async function cmdWait(args: Args): Promise<void> {
@@ -239,7 +324,7 @@ async function cmdWait(args: Args): Promise<void> {
   const q = `agent=${enc(name)}&timeout=${Math.floor(t)}${review ? `&review=${enc(review)}` : ''}`;
   let r: WaitResponse;
   try {
-    r = await api<WaitResponse>(c, 'GET', `/api/agent/wait?${q}`);
+    r = await api<WaitResponse>(c, 'GET', `/agent/wait?${q}`);
   } catch (e) {
     // The server stopped or restarted (a newer rede build) while this wait was blocked.
     if (e instanceof ApiFailure) throw e;
@@ -255,7 +340,7 @@ async function cmdInbox(args: Args): Promise<void> {
   const name = agentName(args);
   const c = await connect();
   const review = str(args, '--review');
-  const r = await api<WaitResponse>(c, 'GET', `/api/agent/wait?agent=${enc(name)}&timeout=0${review ? `&review=${enc(review)}` : ''}`);
+  const r = await api<WaitResponse>(c, 'GET', `/agent/wait?agent=${enc(name)}&timeout=0${review ? `&review=${enc(review)}` : ''}`);
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
   if (!r.threads.length) return out('No feedback is waiting.');
   out(formatWait(r, name, argStyle(name), 'inbox'));
@@ -272,7 +357,7 @@ async function cmdExport(args: Args): Promise<void> {
     if (review) q.set('review', review);
     if (since) q.set('since', since);
     if (before) q.set('before', before);
-    const page: HistoryPage = await api<HistoryPage>(c, 'GET', `/api/history?${q}`);
+    const page: HistoryPage = await api<HistoryPage>(c, 'GET', `/history?${q}`);
     entries.push(...page.entries);
     before = page.next;
   } while (before);
@@ -295,7 +380,7 @@ async function cmdReply(args: Args): Promise<void> {
   const body = await messageBody(args);
   const name = agentName(args);
   const c = await connect();
-  const t = await api<Thread>(c, 'POST', `/api/threads/${id}/messages`, { body, author: { kind: 'agent', name }, resolve: has(args, '--resolve') });
+  const t = await api<Thread>(c, 'POST', `/threads/${id}/messages`, { body, author: { kind: 'agent', name }, resolve: has(args, '--resolve') });
   if (has(args, '--json')) return out(JSON.stringify(t, null, 2));
   out(`Replied to thread #${id} as ${name}${t.resolved ? ' and resolved it' : ''}.`);
 }
@@ -321,7 +406,7 @@ async function cmdComment(args: Args): Promise<void> {
   let lastErr: unknown = null;
   for (const p of candidates) {
     try {
-      const t = await api<Thread>(c, 'POST', `/api/reviews/${enc(reviewId)}/threads?scope=${scope}`, {
+      const t = await api<Thread>(c, 'POST', `/reviews/${enc(reviewId)}/threads?scope=${scope}`, {
         anchor: { path: p, side, startLine: start, endLine: end },
         body,
         author: { kind: 'agent', name },
@@ -340,7 +425,7 @@ async function cmdThreads(args: Args): Promise<void> {
   const state = has(args, '--all') ? 'all' : has(args, '--pending') ? 'pending' : 'open';
   const c = await connect();
   const review = str(args, '--review');
-  const list = await api<AgentThread[]>(c, 'GET', `/api/agent/threads?state=${state}${review ? `&review=${enc(review)}` : ''}`);
+  const list = await api<AgentThread[]>(c, 'GET', `/agent/threads?state=${state}${review ? `&review=${enc(review)}` : ''}`);
   if (has(args, '--json')) return out(JSON.stringify(list, null, 2));
   if (!list.length) return out(`No ${state === 'all' ? '' : state + ' '}threads.`);
   out([`${list.length} ${state} thread(s). Show one with \`rede show <id>\`.`, ...list.map(formatThreadLine)].join('\n'));
@@ -349,7 +434,7 @@ async function cmdThreads(args: Args): Promise<void> {
 async function cmdShow(args: Args): Promise<void> {
   const id = threadId(args.pos[1]);
   const c = await connect();
-  const at = await api<AgentThread>(c, 'GET', `/api/agent/threads/${id}`);
+  const at = await api<AgentThread>(c, 'GET', `/agent/threads/${id}`);
   if (has(args, '--json')) return out(JSON.stringify(at, null, 2));
   out(formatAgentThread(at, agentName(args), { replyHint: true, argStyle: argStyle(agentName(args)) }));
 }
@@ -357,7 +442,7 @@ async function cmdShow(args: Args): Promise<void> {
 async function cmdResolve(args: Args): Promise<void> {
   const id = threadId(args.pos[1]);
   const c = await connect();
-  const t = await api<Thread>(c, 'PATCH', `/api/threads/${id}`, { resolved: true });
+  const t = await api<Thread>(c, 'PATCH', `/threads/${id}`, { resolved: true });
   if (has(args, '--json')) return out(JSON.stringify(t, null, 2));
   out(`Resolved thread #${id}.`);
 }
@@ -365,7 +450,7 @@ async function cmdResolve(args: Args): Promise<void> {
 async function cmdRelease(args: Args): Promise<void> {
   const name = agentName(args);
   const c = await connect();
-  const r = await api<{ released: number }>(c, 'POST', '/api/agent/release', { agent: name });
+  const r = await api<{ released: number }>(c, 'POST', '/agent/release', { agent: name });
   if (has(args, '--json')) return out(JSON.stringify(r));
   out(`Released ${r.released} thread(s) held by ${name}.`);
 }
@@ -373,12 +458,12 @@ async function cmdRelease(args: Args): Promise<void> {
 async function cmdDiff(args: Args): Promise<void> {
   const c = await connect();
   const id = await pickReview(c, args);
-  const r = await api<Review>(c, 'GET', `/api/reviews/${enc(id)}?scope=${scopeOf(args)}&fresh=1`);
+  const r = await api<Review>(c, 'GET', `/reviews/${enc(id)}?scope=${scopeOf(args)}&fresh=1`);
   if (has(args, '--json')) return out(JSON.stringify(r, null, 2));
   out(formatDiff(r, has(args, '--stat')));
   if (has(args, '--stat')) return;
   // The patch is streamed as git prints it: no per-file parsing, constant memory.
-  await streamTo(c.port, `/api/reviews/${enc(id)}/patch?scope=${scopeOf(args)}`, process.stdout);
+  await streamTo(c.port, `${c.base}/reviews/${enc(id)}/patch?scope=${scopeOf(args)}`, process.stdout);
 }
 
 function cmdSetup(): void {
@@ -401,7 +486,7 @@ function rangeSpec(s: string): ReviewSpec | null {
 async function main(argv: string[]): Promise<void> {
   if (argv[0] === '__serve') {
     const { runServerProcess } = await import('../server/server.ts');
-    await runServerProcess(process.cwd(), fs.existsSync(WEB_DIR) ? WEB_DIR : null);
+    await runServerProcess(fs.existsSync(WEB_DIR) ? WEB_DIR : null, CLI_PATH);
     return;
   }
   const args = parseArgs(argv);
@@ -409,6 +494,7 @@ async function main(argv: string[]): Promise<void> {
   if (has(args, '-h', '--help') || cmd === 'help') return out(USAGE);
   if (has(args, '-v', '--version') || cmd === 'version') return out(VERSION);
   const commit = str(args, '-c', '--commit');
+  if (cmd === 'publish') return cmdPublish(args);
   if (commit) return cmdOpen(args, { kind: 'commit', rev: commit });
   switch (cmd) {
     case undefined:
