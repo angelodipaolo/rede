@@ -210,7 +210,10 @@ async function cmdOpen(args: Args, spec: ReviewSpec | null): Promise<void> {
   if (!spec) {
     spec = { kind: 'working' };
     if (!has(args, '-w', '--working')) {
-      const status = await git(['status', '--porcelain', '--untracked-files=normal'], { cwd: repo.root });
+      // GIT_OPTIONAL_LOCKS=0: a plain `git status` refreshes the real index and takes
+      // .git/index.lock to write it back, so a commit or checkout the user (or an agent) runs at
+      // the same moment fails with "index.lock: File exists". Rede only reads here.
+      const status = await git(['status', '--porcelain', '--untracked-files=normal'], { cwd: repo.root, env: { GIT_OPTIONAL_LOCKS: '0' } });
       const branch = await currentBranch(repo.root);
       if (!status.trim() && branch) {
         const def = await defaultBranch(repo.root);

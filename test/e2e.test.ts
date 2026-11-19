@@ -339,6 +339,25 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     expect(Date.now() - t0).toBeLessThan(10_000);
   }, 30_000);
 
+  it('never writes the real index (no .git/index.lock while the user runs git)', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    // A stat change without a content change: a plain `git status` would refresh the index and
+    // write it back under .git/index.lock.
+    const index = path.join(repo.dir, '.git', 'index');
+    const before = fs.statSync(index).mtimeMs;
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(path.join(repo.dir, 'a.txt'), later, later);
+    await new Promise((r) => setTimeout(r, 20));
+    const r = await run(['--no-open']);
+    expect(r.code).toBe(0);
+    expect(fs.statSync(index).mtimeMs).toBe(before);
+    // Control: git itself does write it.
+    repo.git('status', '--porcelain');
+    expect(fs.statSync(index).mtimeMs).not.toBe(before);
+  }, 30_000);
+
   it('opens a review, comments from stdin, waits, replies', async () => {
     repo = new TempRepo();
     repo.write('src/x.ts', lines(10));
