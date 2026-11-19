@@ -4,7 +4,7 @@ import { api } from '../api.ts';
 import { subscribe, useTopics } from '../bus.ts';
 import { setObserverRoot } from '../io.ts';
 import { installKeys } from '../keys.ts';
-import { init, S, visibleFiles } from '../store.ts';
+import { init, S, visibleFiles, showAllDirectories } from '../store.ts';
 import { captureReading, correctAnchor, layout, measureObserver, resetHeights, updateWindow, V } from '../vlist.ts';
 import { relTime } from '../util.ts';
 import { FileCard, updateAllOverflow } from './FileCard.tsx';
@@ -113,7 +113,13 @@ function DiffColumn() {
           {S.loadError && !r && <div class="empty"><h2>Could not load the review</h2><p>{S.loadError}</p></div>}
           {!r && !S.loadError && <div class="empty"><p class="muted">Loading…</p></div>}
           {r && S.files.length === 0 && <EmptyState />}
-          {r && S.files.length > 0 && visibleFiles().length === 0 && <div class="empty"><h2>No files with comments in this scope.</h2><p>Turn off “Files with comments” to see all changes.</p></div>}
+          {r && S.files.length > 0 && visibleFiles().length === 0 && (
+            <div class="empty">
+              <h2>{visibleFiles(true).length ? 'All matching files are hidden.' : 'No files with comments in this scope.'}</h2>
+              {S.hiddenDirs.size > 0 && <button class="btn" onClick={showAllDirectories}>Show all directories</button>}
+              {S.commentedOnly && <p>Turn off “Files with comments” to see all changes.</p>}
+            </div>
+          )}
           <DiffList />
           <OutdatedSection />
           <OrphanDrafts />

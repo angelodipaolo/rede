@@ -43,6 +43,11 @@ visible when you resolve comments, until you turn the filter off or switch
 scope. Threads whose files leave the diff appear in the Outdated section;
 resolved outdated threads remain in History.
 
+Clear a directory's checkbox in the file tree to hide that directory and its
+subdirectories from the diff. The directory stays in the tree so you can check
+it again to restore it. **Show all** restores every hidden directory. This
+setting is saved per review in your browser and applies across diff scopes.
+
 Other commands: `rede status`, `rede list`, `rede stop`, `rede export`.
 
 ### Comments and reviews

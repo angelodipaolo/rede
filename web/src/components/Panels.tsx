@@ -6,6 +6,7 @@ import {
   dismissToast,
   hasPending,
   historyHref,
+  isPathHidden,
   jumpToThread,
   latestBatchId,
   pendingIn,
@@ -273,7 +274,7 @@ export function ArchivedLink({ tail }: { tail?: boolean }) {
 export function OutdatedSection() {
   useTopics('threads', 'files');
   const [open, setOpen] = useState(false);
-  const list = [...S.threads.values()].filter((t) => t.inScope && !S.fileByPath.has(t.anchor.path));
+  const list = [...S.threads.values()].filter((t) => t.inScope && !isPathHidden(t.anchor.path) && !S.fileByPath.has(t.anchor.path));
   if (!list.length) return null;
   const unresolved = list.filter((t) => !t.resolved).length;
   return (

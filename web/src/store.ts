@@ -147,6 +147,7 @@ export const S = {
   sidebarHidden: lsGet('rede:sidebar:hidden') === '1',
   filter: '',
   commentedOnly: false,
+  hiddenDirs: new Set<string>(),
   scroller: null as HTMLElement | null,
   /** Pending messages in the review in progress (server side; survives reload). */
   pendingCount: 0,
@@ -165,26 +166,65 @@ let visibleIndex: Map<string, Thread[]> | null = null;
 let visibleScope: ReviewScope | null = null;
 let visibleMode = false;
 let visibleCache: DiffFileMeta[] = [];
+let browserCache: DiffFileMeta[] = [];
+let visibleHiddenDirs: Set<string> | null = null;
+
+/** Directory boundaries matter: hiding src does not hide src-old. */
+export function isPathHidden(path: string): boolean {
+  for (const dir of S.hiddenDirs) if (path.startsWith(`${dir}/`)) return true;
+  return false;
+}
+
+export function isDirectoryHidden(dir: string): boolean {
+  return S.hiddenDirs.has(dir) || isPathHidden(dir);
+}
 
 /** Shared diff membership. Filename search applies only to the sidebar. */
-export function visibleFiles(): DiffFileMeta[] {
+export function visibleFiles(includeHidden = false): DiffFileMeta[] {
   if (visibleScope !== S.scope || visibleMode !== S.commentedOnly) {
     commentedPaths.clear();
     visibleSource = null;
   }
-  if (visibleSource === S.files && visibleIndex === S.threadsByPath && visibleScope === S.scope && visibleMode === S.commentedOnly) return visibleCache;
+  if (visibleSource === S.files && visibleIndex === S.threadsByPath && visibleScope === S.scope && visibleMode === S.commentedOnly && visibleHiddenDirs === S.hiddenDirs) return includeHidden ? browserCache : visibleCache;
   visibleScope = S.scope;
   visibleMode = S.commentedOnly;
   visibleSource = S.files;
   visibleIndex = S.threadsByPath;
+  visibleHiddenDirs = S.hiddenDirs;
   if (S.commentedOnly) {
     for (const [path, threads] of S.threadsByPath) {
       if (S.fileByPath.has(path) && threads.some((t) => t.inScope && !t.archived)) commentedPaths.add(path);
     }
   }
   const next = S.commentedOnly ? S.files.filter((f) => commentedPaths.has(f.path)) : S.files;
-  if (next.length !== visibleCache.length || next.some((f, i) => f !== visibleCache[i])) visibleCache = next;
-  return visibleCache;
+  if (next.length !== browserCache.length || next.some((f, i) => f !== browserCache[i])) browserCache = next;
+  const shown = S.hiddenDirs.size ? next.filter((f) => !isPathHidden(f.path)) : next;
+  if (shown.length !== visibleCache.length || shown.some((f, i) => f !== visibleCache[i])) visibleCache = shown;
+  return includeHidden ? browserCache : visibleCache;
+}
+
+function setHiddenDirs(dirs: Set<string>) {
+  preserveScroll(() => {
+    S.hiddenDirs = dirs;
+    lsSet(`rede:hidden-dirs:${S.reviewId}`, JSON.stringify([...dirs]));
+    const files = visibleFiles();
+    if (!files.some((f) => f.path === S.current)) setCurrent(files[0]?.path ?? null);
+    emit('files', 'tree', 'ui', 'vspace');
+  });
+}
+
+export function setDirectoryHidden(dir: string, hidden: boolean) {
+  if (!dir || dir.startsWith('/') || dir.split('/').some((p) => !p || p === '.' || p === '..')) return;
+  const dirs = new Set(S.hiddenDirs);
+  for (const path of dirs) {
+    if (path === dir || path.startsWith(`${dir}/`) || (!hidden && dir.startsWith(`${path}/`))) dirs.delete(path);
+  }
+  if (hidden) dirs.add(dir);
+  setHiddenDirs(dirs);
+}
+
+export function showAllDirectories() {
+  setHiddenDirs(new Set());
 }
 
 export function setCommentedOnly(value: boolean) {
@@ -1479,6 +1519,10 @@ export function jumpToThread(id: number) {
     const t2 = S.threads.get(id);
     if (!t2) return;
     const f = S.fileByPath.get(t2.anchor.path);
+    if (isPathHidden(t2.anchor.path)) {
+      pushToast({ kind: 'info', text: 'This directory is hidden. Show it in the file tree to open this thread.' });
+      return;
+    }
     if (!t2.inScope || !f) {
       pushToast({ kind: 'info', text: `Thread #${id} is outside this diff. Open it in History.`, href: historyHref() });
       return;
@@ -1541,6 +1585,11 @@ export function moveThread(dir: 1 | -1) {
 
 export function init(reviewId: string) {
   S.reviewId = reviewId;
+  S.hiddenDirs = new Set();
+  try {
+    const dirs: unknown = JSON.parse(lsGet(`rede:hidden-dirs:${reviewId}`) ?? '[]');
+    if (Array.isArray(dirs)) S.hiddenDirs = new Set(dirs.filter((d): d is string => typeof d === 'string' && !!d && !d.startsWith('/') && d.split('/').every((p) => !!p && p !== '.' && p !== '..')));
+  } catch { /* Ignore invalid saved preferences. */ }
   S.scope = scopeFromUrl();
   applyTheme();
   restoreDrafts();

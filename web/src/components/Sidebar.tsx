@@ -2,7 +2,7 @@ import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { DiffFileMeta as DiffFile } from '../../../src/shared/types.ts';
 import { emit, useTopics } from '../bus.ts';
-import { S, scrollToFile, setCollapsed, isCollapsed, setSidebar, visibleFiles, setCommentedOnly } from '../store.ts';
+import { S, scrollToFile, setCollapsed, isCollapsed, setSidebar, visibleFiles, setCommentedOnly, isDirectoryHidden, setDirectoryHidden, showAllDirectories } from '../store.ts';
 import { fuzzy } from '../util.ts';
 import { Icon } from './Icon.tsx';
 
@@ -34,7 +34,7 @@ function buildTree(files: DiffFile[]): TNode {
   }
   const compact = (n: TNode): TNode => {
     n.dirs = n.dirs.map(compact);
-    if (n !== root && n.files.length === 0 && n.dirs.length === 1) {
+    if (n !== root && !S.hiddenDirs.has(n.key) && n.files.length === 0 && n.dirs.length === 1) {
       const only = n.dirs[0]!;
       return { name: `${n.name}/${only.name}`, key: only.key, dirs: only.dirs, files: only.files };
     }
@@ -115,16 +115,17 @@ export function Sidebar() {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(800);
   const treeRef = useRef<HTMLDivElement>(null);
-  const files = visibleFiles();
+  // Keep hidden directory rows available so the reviewer can restore them.
+  const files = visibleFiles(true);
   const q = S.filter.trim();
   const shown = useMemo(() => (q ? files.filter((f) => fuzzy(q, f.path) >= 0) : files), [files, q]);
-  const tree = useMemo(() => buildTree(shown), [shown]);
+  const tree = useMemo(() => buildTree(shown), [shown, S.hiddenDirs]);
 
   const flat = useMemo(() => {
     const out: Flat[] = [];
     const walk = (n: TNode, depth: number) => {
       for (const d of n.dirs) {
-        const closed = !q && closedDirs.has(d.key);
+        const closed = isDirectoryHidden(d.key) || (!q && closedDirs.has(d.key));
         out.push({ d, depth, closed });
         if (!closed) walk(d, depth + 1);
       }
@@ -184,12 +185,15 @@ export function Sidebar() {
     const r = flat[i]!;
     if ('d' in r) {
       const d = r.d;
+      const hidden = isDirectoryHidden(d.key);
+      const partial = !hidden && [...S.hiddenDirs].some((path) => path.startsWith(`${d.key}/`));
       rows.push(
         <div
           key={`d:${d.key}`}
-          class="td"
+          class={`td${hidden ? ' hidden-dir' : ''}`}
           style={{ paddingLeft: 8 + r.depth * 12 }}
           onClick={() => {
+            if (hidden) return;
             const next = new Set(closedDirs);
             if (r.closed) next.delete(d.key);
             else next.add(d.key);
@@ -198,6 +202,17 @@ export function Sidebar() {
         >
           <Icon name={r.closed ? 'right' : 'downchev'} size={12} />
           <span class="dname">{d.name}</span>
+          {hidden && <span class="dir-hidden-label">Hidden</span>}
+          <input
+            class="dir-visibility"
+            type="checkbox"
+            checked={!hidden && !partial}
+            ref={(el) => { if (el) el.indeterminate = partial; }}
+            aria-label={`Show ${d.key} in diff`}
+            title={hidden ? 'Show directory in diff' : partial ? 'Show all files in directory' : 'Hide directory from diff'}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setDirectoryHidden(d.key, !e.currentTarget.checked)}
+          />
         </div>,
       );
     } else {
@@ -246,8 +261,8 @@ export function Sidebar() {
               S.filter = '';
               emit('filter');
               (e.target as HTMLInputElement).blur();
-            } else if (e.key === 'Enter' && shown[0]) {
-              scrollToFile(shown[0].path);
+            } else if (e.key === 'Enter' && shown.some((f) => !isDirectoryHidden(f.path))) {
+              scrollToFile(shown.find((f) => !isDirectoryHidden(f.path))!.path);
               (e.target as HTMLInputElement).blur();
             }
           }}
@@ -257,8 +272,14 @@ export function Sidebar() {
       <label class="comment-filter">
         <input type="checkbox" checked={S.commentedOnly} onChange={(e) => setCommentedOnly(e.currentTarget.checked)} />
         <span>Files with comments</span>
-        <span class="fcount">{files.length} of {S.files.length}</span>
+        <span class="fcount">{visibleFiles().length} of {S.files.length}</span>
       </label>
+      {S.hiddenDirs.size > 0 && (
+        <div class="hidden-dirs-summary">
+          <span>{S.hiddenDirs.size} {S.hiddenDirs.size === 1 ? 'directory' : 'directories'} hidden</span>
+          <button class="btn sm ghost" onClick={showAllDirectories}>Show all</button>
+        </div>
+      )}
       <div
         class="tree"
         ref={treeRef}

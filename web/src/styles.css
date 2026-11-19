@@ -2594,6 +2594,10 @@ kbd {
 .thread-nav { display: flex; gap: 2px; }
 .thread-nav kbd { color: var(--text-3); font-size: var(--fs-xs); }
 .thread-nav button:disabled { opacity: .45; cursor: default; }
+.dir-visibility { margin: 0 8px 0 auto; flex: none; accent-color: var(--accent); cursor: pointer; }
+.dir-hidden-label { margin-left: auto; color: var(--text-3); font-size: var(--fs-xs); }
+.hidden-dir .dname { color: var(--text-3); }
+.hidden-dirs-summary { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-bottom: 1px solid var(--border-soft); color: var(--text-2); font-size: var(--fs-xs); }
 @media (max-width: 1400px) {
   .thread-nav button > span { display: none; }
 }
