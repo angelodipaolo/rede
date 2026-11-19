@@ -16,13 +16,19 @@
     "build:server": "node scripts/build-server.mjs",
     "build:web": "vite build web",
     "dev:web": "vite web",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p app/tsconfig.json",
+    "test": "vitest run",
+    "app": "npm run build && node scripts/build-app.mjs",
+    "app:install": "npm run build && node scripts/build-app.mjs --install",
+    "app:dev": "npm run build && electron dist/app-src/main.cjs",
+    "app:icon": "node scripts/make-icon.mjs"
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "@preact/preset-vite": "^2.10.6",
     "@types/node": "^22.20.5",
     "dompurify": "^3.4.18",
+    "electron": "^45.4.1",
     "esbuild": "^0.28.2",
     "highlight.js": "^11.12.0",
     "marked": "^18.2.1",
