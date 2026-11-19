@@ -22,9 +22,11 @@ function EmptyState() {
   const msg = scope === 'staged' ? 'Nothing staged.' : scope === 'unstaged' ? 'No unstaged changes.' : 'No changes.';
   return (
     <div class="empty">
-      <div class="empty-mark" />
+      <div class="empty-mark">
+        <Icon name="check" size={18} />
+      </div>
       <h2>{msg}</h2>
-      <p>Waiting for changes… This view updates by itself when files change.</p>
+      <p>This view updates by itself when files change.</p>
     </div>
   );
 }

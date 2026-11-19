@@ -2103,14 +2103,16 @@ kbd {
 .empty p {
   margin: 0;
 }
+/* A static mark: an empty view is idle, not loading. */
 .empty-mark {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   margin: 0 auto;
+  display: grid;
+  place-items: center;
   border-radius: 50%;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  animation: spin 2.4s linear infinite;
+  border: 1px solid var(--border);
+  color: var(--text-3);
 }
 .outdated-sec .fh {
   cursor: pointer;

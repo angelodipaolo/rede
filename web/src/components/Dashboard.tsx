@@ -155,7 +155,9 @@ export function DashboardApp() {
         {!d && <p class="muted">Loading…</p>}
         {d && !d.workspaces.length && (
           <div class="empty">
-            <div class="empty-mark" />
+            <div class="empty-mark">
+              <Icon name="comment" size={18} />
+            </div>
             <h2>No reviews yet</h2>
             <p>
               Run <code>rede</code> in a git repository or worktree. Agents publish their work with <code>rede publish</code>.
