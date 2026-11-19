@@ -358,6 +358,31 @@ describe.skipIf(!fs.existsSync(CLI))('CLI (built bundle)', () => {
     expect(fs.statSync(index).mtimeMs).not.toBe(before);
   }, 30_000);
 
+  it('publishes a branch review with a summary and prints its URL', async () => {
+    repo = new TempRepo();
+    repo.write('a.txt', 'x\n');
+    repo.commit();
+    repo.git('checkout', '-q', '-b', 'feature');
+    repo.write('a.txt', 'y\n');
+    repo.commit('change');
+    repo.write('b.txt', 'uncommitted\n');
+    const r = await run(['publish', '--as', 'claude-impl'], 'Changes a.\n\nAdds b.\n');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Published "feature → main"');
+    expect(r.out).toMatch(/Review URL: http:\/\/127\.0\.0\.1:\d+\/w\/[\w.-]+\/r\/branch-feature-vs-main/);
+    const app = await run(['publish', '-m', 'Second pass.', '--json'], undefined, { REDE_OPEN: 'app' });
+    const j = JSON.parse(app.out);
+    expect(j.review).toMatchObject({ id: 'branch-feature-vs-main', summary: 'Second pass.', awaiting: true, publishedBy: { kind: 'agent', name: 'agent' } });
+    expect(j.appUrl).toMatch(/^rede:\/\/open\/[\w.-]+\/branch-feature-vs-main$/);
+    const text = await run(['publish', '-m', 'Third.'], undefined, { REDE_OPEN: 'app' });
+    expect(text.out).toContain(`Review URL: ${j.appUrl}`);
+    expect(text.out).toContain('Browser URL: http://127.0.0.1:');
+    // The branch review includes the uncommitted file.
+    const d = await run(['diff', '--stat', '--review', 'branch-feature-vs-main']);
+    expect(d.out).toContain('b.txt');
+    expect((await run(['publish', '-m', '  '])).code).toBe(2);
+  }, 30_000);
+
   it('opens a review, comments from stdin, waits, replies', async () => {
     repo = new TempRepo();
     repo.write('src/x.ts', lines(10));

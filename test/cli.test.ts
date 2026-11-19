@@ -159,5 +159,8 @@ describe('wait output with reviews', () => {
     expect(skillFile()).toContain('Run `rede guide`');
     expect(skillFile()).not.toContain('## The loop');
     for (const m of ['ASK', 'DISCUSS', 'IMPLEMENT']) expect(GUIDE).toContain(`- ${m}:`);
+    expect(GUIDE).toContain('rede publish');
+    expect(skillFile()).toContain('rede publish');
+    expect(codexRules([])).toContain('"publish"');
   });
 });

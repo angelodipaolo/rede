@@ -4,18 +4,42 @@ import path from 'node:path';
 
 export const GUIDE = `# Rede: answer code review feedback
 
-Rede is a local code review tool. A human reviews a git diff in the browser
-and leaves comment threads on lines. You answer in those threads. You talk to
-Rede only through the \`rede\` command. Run it from inside the repository.
-It starts its local server (127.0.0.1) when needed.
+Rede is a local code review tool. A human reviews a git diff in the Rede app
+or a browser and leaves comment threads on lines. You answer in those threads.
+You talk to Rede only through the \`rede\` command. Run it from inside the
+worktree you work in: everything you do goes to that worktree's reviews. One
+local server (127.0.0.1) serves every repository; rede starts it when needed.
+
+Your name is on everything you write. It defaults to \`claude\` or \`codex\`.
+When several agents may work in one worktree, add \`--as <name>\` (for
+example \`--as claude-review\`) to every rede command, or set \`REDE_AGENT\`.
 
 Pick the way to work from what the user asked:
+
+- PUBLISH. The user (or AGENTS.md) asks you to publish your work for review
+  in Rede. See "Publish".
 
 - ONE PASS (the default). The user says "address the rede feedback", "read
   the review", "answer my rede comments" or similar. Handle what is waiting
   now, then stop.
 - WATCH. Only when the user explicitly asks you to watch Rede, wait for
   comments, stay connected, or answer comments live.
+
+## Publish
+
+When your work is done, give the human a short summary and mark it ready:
+
+    rede publish <<'REDE_EOF'
+    Two to four lines: what changed and why, and anything the reviewer
+    should look at first.
+    REDE_EOF
+
+It creates or updates the review of this worktree (the branch against the
+default branch, or the uncommitted changes on the default branch; pass a
+base, \`a..b\`, \`-c <rev>\` or \`--review <id>\` to choose), stores the
+summary, marks it ready for review, and prints the review URL. Put that URL
+in your final response. Publishing again replaces the summary and marks it
+ready again. Then stop: the human's feedback comes through \`rede inbox\`.
 
 ## One pass (default)
 
@@ -58,7 +82,7 @@ asks you to; the human resolves threads.
 
 ## Codex
 
-Rede needs its server on 127.0.0.1 and writes .git/rede; the Codex sandbox
+Rede needs its server on 127.0.0.1 and may write ~/.rede; the Codex sandbox
 blocks both. \`rede setup\` installs a Codex rule that runs rede commands
 outside the sandbox without a prompt. The rule matches only a plain command:
 - Run \`rede ...\` by name and alone: no pipe, \`&&\`, redirection, heredoc or
@@ -95,23 +119,25 @@ Every thread shows a "Mode:" line. Follow it exactly.
 - A thread marked OUTDATED: the code it was on changed. It shows the original
   code; read the current code before you answer.
 
-## Review findings
+## Leaving review findings
 
-When the human asks you to review the diff:
+When you are asked to review a change and leave your findings in Rede:
 
-1. \`rede diff\` prints the exact diff the human sees (\`--stat\` for a summary).
-2. For each real problem, start a thread on the line:
+- \`rede diff\` prints the exact diff the human sees (\`--stat\` for a list
+  of files). \`--review <id>\` picks a review; the default is the review
+  opened last in this worktree.
+- Each finding is a thread on lines of the diff:
 
-       rede comment src/app.ts:42-45 <<'REDE_EOF'
-       **Bug:** \`user\` can be null here when ... Suggest: ...
-       REDE_EOF
+      rede comment src/app.ts:42-45 <<'REDE_EOF'
+      Your finding in markdown.
+      REDE_EOF
 
-   Use \`--old\` to comment on a deleted line (old side). \`rede comment <path>\`
-   without a line starts a file-level thread. Only files in the diff accept
-   comments. Report real issues (bugs, risks, missing cases), not style nits,
-   unless asked. In Codex, use -m as above.
-3. Then stop and tell the user how many threads you left (in watch mode, go
-   back to \`rede wait\`).
+  \`--old\` comments on a deleted line (old side). \`rede comment <path>\`
+  without a line starts a file-level thread. Only files in the diff accept
+  comments. In Codex, use -m as above.
+- The human sees each thread as a finding by your name, and may answer it;
+  their answers reach you through \`rede inbox\` like any feedback.
+- Tell the user how many threads you left.
 
 ## Other commands
 
@@ -122,10 +148,12 @@ When the human asks you to review the diff:
 - \`rede release\` gives back threads you received but will not answer.
 - Add \`--as <name>\` to set your name, \`--review <id>\` to pick a review,
   \`--json\` for raw JSON.
+- \`rede publish --not-ready -m '<summary>'\` updates the summary without
+  asking for a review.
 `;
 
 const DESCRIPTION =
-  'Answer code review feedback in Rede, the local diff review tool. Use when the user says "address rede feedback", "address the review", "read the review", "answer my rede comments", "watch rede", or asks you to connect to Rede, run `rede inbox` or `rede wait`, or leave review findings on a diff as Rede threads.';
+  'Exchange code review feedback through Rede, the local diff review tool. Use when the user (or AGENTS.md) says "publish to rede", "publish for review", "address rede feedback", "address the review", "read the review", "answer my rede comments", "watch rede", or asks you to connect to Rede, run `rede publish`, `rede inbox` or `rede wait`, or leave review findings on a diff as Rede threads.';
 
 /**
  * The installed skill only points at `rede guide`, so it never goes stale when Rede changes:
@@ -137,8 +165,11 @@ Run \`rede guide\` first and follow what it prints. It is the current guide
 for the installed Rede version: how to read the feedback, how to reply, and
 what each mode (ask, discuss, implement) allows you to do.
 
-By default, handle the waiting feedback once (\`rede inbox\`), reply in every
-thread, then stop and summarize. Loop on \`rede wait\` only when the user asks
+To publish your finished work for review: \`rede publish\` with a short
+summary, then put the URL it prints in your final response.
+
+To answer feedback: by default, handle the waiting feedback once
+(\`rede inbox\`), reply in every thread, then stop and summarize. Loop on \`rede wait\` only when the user asks
 you to watch Rede or answer comments live.
 
 Run rede by name and alone (no pipe, redirection or heredoc around
@@ -172,7 +203,7 @@ function writeIfChanged(file: string, content: string, what: string): SetupResul
 }
 
 /** The rede agent commands. `rede` alone (opens a browser), stop and setup are left out. */
-export const AGENT_COMMANDS = ['inbox', 'wait', 'reply', 'comment', 'threads', 'show', 'diff', 'release', 'resolve', 'status', 'list', 'guide'];
+export const AGENT_COMMANDS = ['inbox', 'wait', 'reply', 'comment', 'threads', 'show', 'diff', 'release', 'resolve', 'status', 'list', 'guide', 'publish'];
 
 /** Executable files named rede on PATH, as absolute paths. */
 export function redeOnPath(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -199,12 +230,12 @@ export function codexRules(executables: string[]): string {
   const cmds = AGENT_COMMANDS.map((c) => JSON.stringify(c)).join(', ');
   const lines = [
     '# Written by `rede setup`. Lets Codex run rede agent commands outside its sandbox',
-    '# without a prompt: they talk to the local Rede server on 127.0.0.1 and write .git/rede.',
+    '# without a prompt: they talk to the local Rede server on 127.0.0.1 and may start it (~/.rede).',
     '# Only plain commands match (no pipe, redirection or heredoc). Delete this file to undo.',
     'prefix_rule(',
     `    pattern = ["rede", [${cmds}]],`,
     '    decision = "allow",',
-    '    justification = "Rede talks to its local review server on 127.0.0.1 and keeps its state in .git/rede.",',
+    '    justification = "Rede talks to its local review server on 127.0.0.1, which keeps review state in .git/rede and ~/.rede.",',
     ')',
   ];
   if (executables.length) {

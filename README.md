@@ -1,9 +1,11 @@
 # Rede
 
-Rede is a local code review tool. You review a git diff in the browser, leave
-comments on lines, and a coding agent (Claude Code, Codex, or anything with a
-shell) answers in the same threads. Everything runs on your machine, on
-127.0.0.1. Nothing goes to GitHub or the cloud.
+Rede is a local code review tool. You review a git diff in the Rede app or a
+browser, leave comments on lines, and coding agents (Claude Code, Codex, or
+anything with a shell) answer in the same threads. Agents publish their
+finished work with a short summary; the dashboard and the Dock badge show
+what waits for you, across every repository and worktree. Everything runs on
+your machine, on 127.0.0.1. Nothing goes to GitHub or the cloud.
 
 ## Install
 
@@ -14,6 +16,16 @@ npm install && npm run build && npm link
 ```
 
 `npm link` puts the `rede` command on your PATH.
+
+The desktop app (macOS) is optional:
+
+```sh
+npm run app:install   # builds Rede.app, copies it to /Applications, registers rede:// links
+```
+
+When Rede.app is installed, `rede` opens reviews in the app; `--browser` (or
+`REDE_OPEN=browser`) opens them in the browser instead. The app and the
+browser show the same pages from the same server.
 
 ## Use
 
@@ -31,9 +43,33 @@ rede --no-open    # print the URL only
 `rede` with a clean working tree on a feature branch opens a branch review
 against the default branch (origin/HEAD, else main or master).
 
-The review opens at `http://127.0.0.1:<port>/r/<review-id>`. The diff refreshes
+The review opens at `http://127.0.0.1:4319/w/<workspace>/r/<review-id>` (in
+the app: `rede://open/<workspace>/<review-id>`). A workspace is one worktree;
+its id is the worktree's directory name and a short hash. The diff refreshes
 live while files change, so you can review while an agent keeps writing code.
 Uncommitted reviews have three views: all changes, staged, and unstaged.
+
+### Dashboard and tabs
+
+`http://127.0.0.1:4319/` (the app's home) lists every worktree that ran
+`rede`, grouped by repository, with its reviews:
+
+- **Ready for review**: reviews an agent published (`rede publish`) that you
+  have not seen, with the agent's summary. The app's Dock icon shows their
+  number. A review stops waiting when you open it (the page is on screen and
+  focused), or when you click **Mark seen** or **Mark all seen**. When the
+  agent publishes again, it waits again.
+- **Waiting for your answer**: reviews with open threads whose last message is
+  from an agent (a reply or a finding).
+
+Every page has a tab strip of the reviews you opened, from any worktree. The
+tab names the worktree. A dot marks a review that waits for you; a number
+counts agent messages that wait for your answer. In the app, `⌘0` opens the
+dashboard, `⌘1`…`⌘9` a tab, and `⌘⇧[` / `⌘⇧]` the previous or next tab.
+
+A review that an agent published shows its summary above the diff, with the
+agent's name. Threads an agent started show **Finding · <agent>**; every
+message shows its author, and agents have a colour by kind.
 
 After an agent replies, enable **Files with comments** in the sidebar to show
 only commented files in both the tree and diff. Resolved comments are included.
@@ -48,7 +84,8 @@ subdirectories from the diff. The directory stays in the tree so you can check
 it again to restore it. **Show all** restores every hidden directory. This
 setting is saved per review in your browser and applies across diff scopes.
 
-Other commands: `rede status`, `rede list`, `rede stop`, `rede export`.
+Other commands: `rede status`, `rede list`, `rede stop` (stops the shared
+server), `rede export`.
 
 ### Comments and reviews
 
@@ -85,6 +122,27 @@ tells the agent to run `rede guide`, which prints the instructions of the
 installed Rede build, so the skill does not go stale when Rede changes.
 You can also paste the guide into any agent.
 
+### Publish for review
+
+An agent that finished its work runs:
+
+```sh
+rede publish <<'EOF'
+Adds retry with backoff to the cache client. Check src/cache.ts first.
+EOF
+```
+
+`publish` creates or updates the review of the agent's worktree (the branch
+against the default branch, or the uncommitted changes on the default
+branch), stores the summary, marks the review ready, and prints the review
+URL for the agent's final message. Rede does not ask agents to publish by
+itself. To make it a habit, add one line to your `AGENTS.md` or `CLAUDE.md`:
+
+> When you finish a task, run `rede publish` with a short summary and include
+> the review URL in your final response.
+
+### Feedback
+
 The usual flow is one pass. The agent finishes its work, you review the diff
 in Rede and finish your review, then you go back to the agent and say:
 
@@ -110,6 +168,7 @@ Agent commands:
 
 | Command | What it does |
 | --- | --- |
+| `rede publish [-m <text>]` | Sets the change summary of the worktree's review, marks it ready for review, prints the URL. Reads stdin when `-m` is absent. `--not-ready` keeps the summary only. |
 | `rede inbox` | Prints the feedback waiting now, in the same format as `wait`, and claims it the same way. Never blocks. Prints "No feedback is waiting." when there is none. |
 | `rede wait [--timeout <sec>]` | Long poll (watch mode). Prints new threads with diff context and the conversation. Default timeout 100 s. |
 | `rede reply <id> [-m <text>] [--resolve]` | Reply. Reads stdin when `-m` is absent. Never resolves unless `--resolve`. |
@@ -117,6 +176,11 @@ Agent commands:
 | `rede diff [--stat] [--staged\|--unstaged]` | Print the exact diff the reviewer sees. |
 | `rede threads [--all\|--pending]`, `rede show <id>` | Read threads, old ones too. `show` prints the original code of an outdated thread. |
 | `rede resolve <id>`, `rede release` | Resolve a thread; give back claimed threads. |
+
+Agent commands act on the worktree they run in: feedback, findings and
+reviews never cross worktrees. Every message carries its agent's name. When
+several agents work in one worktree (one implements, one reviews), give each
+its own name with `--as` or `REDE_AGENT`.
 
 All agent commands take `--as <name>` (default: `$REDE_AGENT`, else `claude`
 inside Claude Code, `codex` inside Codex, else `agent`), `--review <id>`
@@ -137,7 +201,7 @@ is delivered again to the same agent.
 
 Codex runs commands in a sandbox (`workspace-write` in interactive `codex`,
 `read-only` in `codex exec`). The sandbox blocks the connection to the Rede
-server on 127.0.0.1 (`EPERM`) and writes to `.git/rede`, in both modes.
+server on 127.0.0.1 (`EPERM`) and writes to `~/.rede`, in both modes.
 Turning on `sandbox_workspace_write.network_access` would open the network for
 every command of the session, so Rede does not use it.
 
@@ -146,7 +210,7 @@ Instead, `rede setup` writes this Codex rule to
 
 ```python
 prefix_rule(
-    pattern = ["rede", ["inbox", "wait", "reply", "comment", "threads", "show", "diff", "release", "resolve", "status", "list", "guide"]],
+    pattern = ["rede", ["inbox", "wait", "reply", "comment", "threads", "show", "diff", "release", "resolve", "status", "list", "guide", "publish"]],
     decision = "allow",
     justification = "...",
 )
@@ -208,20 +272,29 @@ Every thread and submitted review is kept. Nothing is deleted automatically.
 
 ## Storage
 
-Rede keeps its data in `.git/rede/` of each repository (for a linked
-worktree: in that worktree's git directory). It is never committed.
+Rede keeps review data in `.git/rede/` of each repository (for a linked
+worktree: in that worktree's git directory). It is never committed. The
+shared server keeps its own files in `~/.rede/` (`$REDE_HOME`).
+
+`~/.rede/`:
+
+- `server.json`: pid, port and build of the running server. A strictly newer
+  `rede` (higher version, or same version and a newer build) replaces an
+  older running server on the same port. An older `rede` uses the newer
+  server as is, so two installs (for example the CLI and Rede.app) never
+  restart each other in turn. A command that cannot write `~/.rede` (sandbox)
+  never replaces a server.
+- `workspaces.json`: the worktrees the server knows, for the dashboard.
+  Removing a worktree from the dashboard only forgets it here.
+- `start.lock`: held for a moment by the command that starts the server. A
+  lock left by a process that no longer runs is removed at once.
+- `server.log`, `last-port`.
+
+`.git/rede/` of each worktree:
 
 - `rede.db`: reviews, threads with their code snapshots, messages,
   submitted review batches, viewed state (SQLite, built into Node). Older
   databases are upgraded in place (columns are added; no row changes).
-- `server.json`: pid, port and build of the running server. A strictly newer
-  `rede` (higher version, or same version and a newer bundle) replaces an
-  older running server on the same port. An older `rede` uses the newer
-  server as is, so two installs never restart each other in turn. A command
-  that cannot write `.git/rede` (sandbox) never replaces a server.
-- `start.lock`: held for a moment by the command that starts the server. A
-  lock left by a process that no longer runs is removed at once.
-- `server.log`: server output.
 - `snapshot.index`, `staged.index`: private git index files used to snapshot
   the working tree. Your real index is never written.
 - `objects/`: git objects written by snapshots. Rede never adds objects to
@@ -230,11 +303,24 @@ worktree: in that worktree's git directory). It is never committed.
 
 ## Design notes
 
-- **One small server per repository**, started on demand by any `rede`
-  command and detached. It binds 127.0.0.1 on a random port, rejects foreign
-  `Host` headers (DNS rebinding) and foreign `Origin` on writes, and exits by
-  itself after 30 minutes without a browser, a waiting agent or a request
-  (`REDE_IDLE_TIMEOUT` in seconds). No runtime dependencies.
+- **One server for every repository and worktree**, started on demand by any
+  `rede` command or by Rede.app, and detached. It opens each worktree's
+  database on first use and keeps them apart (API under `/api/w/<workspace>/`).
+  It binds 127.0.0.1 on port 4319 (else the last port, else a random one),
+  rejects foreign `Host` headers (DNS rebinding) and foreign `Origin` on
+  writes, and exits by itself after 30 minutes without a page, a waiting
+  agent or a request (`REDE_IDLE_TIMEOUT` in seconds). Rede.app keeps it
+  running and starts it again when needed. No runtime dependencies. Before
+  this server, Rede ran one server per worktree; the shared server stops such
+  an old server before it opens that worktree.
+- **Rede never takes git's locks.** Snapshots use a private index and a
+  private object directory. The one `git status` on the real index (when
+  `rede` chooses the review) runs with `GIT_OPTIONAL_LOCKS=0`, so it never
+  holds `.git/index.lock` while you or an agent commit.
+- **Rede.app** is an Electron window on the shared server. It starts the
+  server with its bundled CLI and Electron's Node (`ELECTRON_RUN_AS_NODE`),
+  opens `rede://` links, and shows the Dock badge from the server's
+  `/api/events` stream.
 - **Every side of a diff is a git tree.** The working tree is snapshotted into
   a private index: `git status` (with the untracked cache) finds changed paths,
   `git add` stages only those, `git write-tree` makes the tree. New objects go
@@ -264,9 +350,16 @@ worktree: in that worktree's git directory). It is never committed.
 ```sh
 npm run build:server   # bundle src/cli/main.ts to dist/cli.js
 npm run build:web      # build the UI to dist/web
-npm test               # vitest; tests create temporary repositories
+npm test               # vitest; tests create temporary repositories and a temporary REDE_HOME
 npm run typecheck
+npm run app            # package dist/app/Rede-darwin-<arch>/Rede.app
+npm run app:dev        # run the app from the checkout (shows as Electron)
+npm run app:icon       # render app/icon.svg to app/icon.icns
 ```
+
+Browser development still works as before: start the server with
+`REDE_ALLOW_ORIGIN=http://localhost:5173 rede`, then `npm run dev:web`; the
+dev server proxies `/api` to port 4319 (`REDE_PORT` to change).
 
 Environment variables for development: `REDE_PORT` (fixed server port),
 `REDE_ALLOW_ORIGIN` (extra allowed origins, comma-separated, for a dev

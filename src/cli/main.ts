@@ -477,6 +477,7 @@ function cmdSetup(): void {
   }
   out(lines.join('\n'));
   out('Next: after you submit a review in Rede, tell your agent "Address the Rede feedback." To have it answer comments live, say "Watch Rede and answer my comments live."');
+  out('To have agents publish finished work for review, add one line to your AGENTS.md or CLAUDE.md: "When you finish a task, run `rede publish` with a short summary and include the review URL in your final response."');
   out('Codex: start a new Codex session so it loads the rule. Run `rede setup` again after you update Rede: the rule lists the rede subcommands Codex may run.');
 }
 
