@@ -96,6 +96,13 @@ export class Hub {
   /** Registers the worktree that contains `dir` (or finds it). */
   async register(dir: string): Promise<WorkspaceInfo> {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw badRequest('root must be an absolute path.');
+    // Fast path: the CLI sends the worktree root it found itself. A known, open worktree needs no git call.
+    const known = this.entries.get(workspaceId(dir));
+    if (known?.rede && known.info.root === dir && fs.existsSync(path.join(dir, '.git'))) {
+      known.info = { ...known.info, lastUsedAt: new Date().toISOString() };
+      this.writeRegistrySoon();
+      return this.publicInfo(known);
+    }
     let repo: RepoPaths;
     try {
       repo = await discoverRepo(dir);

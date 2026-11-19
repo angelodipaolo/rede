@@ -160,6 +160,66 @@ describe('hub: one server for every worktree', () => {
     expect((await req(srv.port, 'GET', '/api/w/nope-000000/reviews')).status).toBe(404);
   }, 30_000);
 
+  it('routes feedback per worktree under concurrent agents, live pollers and git commits', async () => {
+    const dirs = threeWorktrees();
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'rede-home-'));
+    srv = await startServer({ home, port: 0, webDir: null, idleMs: 0, pollMs: 50, presenceLingerMs: 0, workspaces: dirs });
+    const port = srv.port;
+    const ws = srv.workspaces;
+    // A browser on each review: the server snapshots every worktree every 50 ms.
+    const streams: http.ClientRequest[] = [];
+    for (const w of ws) {
+      await req(port, 'POST', `/api/w/${w}/reviews`, { spec: { kind: 'working' } });
+      const r = http.get({ host: '127.0.0.1', port, path: `/api/w/${w}/reviews/working/events` });
+      r.on('error', () => {});
+      streams.push(r);
+    }
+    // Two independent agents per worktree wait for feedback.
+    const waits = ws.flatMap((w, i) =>
+      ['impl', 'review'].map((role) => ({ w, i, role, p: req(port, 'GET', `/api/w/${w}/agent/wait?agent=${role}-${i}&timeout=20`) })),
+    );
+    // Meanwhile the user commits in every worktree.
+    const { execFile } = await import('node:child_process');
+    const git = (cwd: string, ...args: string[]) =>
+      new Promise<string>((resolve, reject) => execFile('git', args, { cwd }, (e, _out, err) => (e ? reject(new Error(err || e.message)) : resolve(err))));
+    const commits = dirs.map(async (d, i) => {
+      for (let n = 0; n < 15; n++) {
+        fs.writeFileSync(path.join(d, `f${n}.txt`), `${i}-${n}\n`);
+        await git(d, 'add', `f${n}.txt`);
+        await git(d, 'commit', '-q', '-m', `c${n}`);
+      }
+    });
+    // The human writes one comment in each worktree, while all that runs.
+    for (const [i, w] of ws.entries()) {
+      fs.writeFileSync(path.join(dirs[i]!, 'a.ts'), lines(10).replace('line 5\n', `five ${i}\n`));
+      await req(port, 'GET', `/api/w/${w}/reviews/working?fresh=1`);
+      const t = await req(port, 'POST', `/api/w/${w}/reviews/working/threads`, {
+        anchor: { path: 'a.ts', side: 'new', startLine: 5, endLine: 5 },
+        body: `question for worktree ${i}`,
+        author: { kind: 'human', name: 'you' },
+      });
+      expect(t.status).toBe(200);
+    }
+    await Promise.all(commits); // no git command failed (index.lock or otherwise)
+    const results = await Promise.all(waits.map(async (x) => ({ ...x, r: (await x.p).json })));
+    for (const [i] of ws.entries()) {
+      const got = results.filter((x) => x.i === i && x.r.threads.length);
+      // Exactly one agent of that worktree got its thread, and only that one.
+      expect(got).toHaveLength(1);
+      expect(got[0]!.r.threads.map((t: { thread: { messages: { body: string }[] } }) => t.thread.messages[0]!.body)).toEqual([`question for worktree ${i}`]);
+      expect(got[0]!.r.threads[0].workspace).toBe(ws[i]);
+    }
+    // Agents answer under their own names; the human sees who wrote what.
+    for (const x of results.filter((x) => x.r.threads.length)) {
+      const tid = x.r.threads[0].thread.id;
+      await req(port, 'POST', `/api/w/${x.w}/threads/${tid}/messages`, { body: 'answer', author: { kind: 'agent', name: `${x.role}-${x.i}` } });
+      const th = (await req(port, 'GET', `/api/w/${x.w}/threads/${tid}`)).json;
+      expect(th.messages.map((m: { author: { kind: string; name: string } }) => `${m.author.kind}:${m.author.name}`)).toEqual(['human:you', `agent:${x.role}-${x.i}`]);
+    }
+    for (const d of dirs) expect(fs.existsSync(path.join(repo.dir, '.git', 'index.lock'))).toBe(false);
+    for (const s of streams) s.destroy();
+  }, 60_000);
+
   it('marks a removed worktree missing and can forget it', async () => {
     const dirs = threeWorktrees();
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'rede-home-'));

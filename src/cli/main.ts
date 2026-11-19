@@ -168,8 +168,8 @@ interface Ctx {
 }
 
 /** Finds the worktree, makes sure the hub runs, and registers the worktree with it. */
-async function connect(cwd = process.cwd()): Promise<Ctx> {
-  const repo = await discoverRepo(cwd);
+async function connect(known?: RepoPaths): Promise<Ctx> {
+  const repo = known ?? (await discoverRepo(process.cwd()));
   const info = await ensureServer(CLI_PATH);
   const workspace = await request<WorkspaceInfo>(info.port, 'POST', '/api/workspaces', { root: repo.root });
   return { repo, port: info.port, workspace, base: `/api/w/${encodeURIComponent(workspace.id)}` };
@@ -221,7 +221,7 @@ async function cmdOpen(args: Args, spec: ReviewSpec | null): Promise<void> {
       }
     }
   }
-  const c = await connect(repo.root);
+  const c = await connect(repo);
   const r = await api<ReviewSummary>(c, 'POST', '/reviews', { spec });
   const urls = reviewUrls(c, r.id);
   const inApp = !has(args, '--browser') && appInstalled();
@@ -252,7 +252,7 @@ async function cmdPublish(args: Args): Promise<void> {
   const summary = await messageBody(args);
   const name = agentName(args);
   const repo = await discoverRepo(process.cwd());
-  const c = await connect(repo.root);
+  const c = await connect(repo);
   let id = str(args, '--review');
   if (!id) id = (await api<ReviewSummary>(c, 'POST', '/reviews', { spec: await publishSpec(repo, args) })).id;
   const r = await api<PublishResponse>(c, 'POST', `/reviews/${enc(id)}/publish`, { summary, author: { kind: 'agent', name }, ready: !has(args, '--not-ready') });
