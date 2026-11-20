@@ -226,6 +226,16 @@ export function setDirectoryHidden(dir: string, hidden: boolean) {
   setHiddenDirs(dirs);
 }
 
+/** Shows the hidden directories that contain `path` again. Other hidden directories stay hidden. */
+export function revealPath(path: string): string[] {
+  const shown = [...S.hiddenDirs].filter((dir) => path.startsWith(`${dir}/`));
+  if (!shown.length) return [];
+  const dirs = new Set(S.hiddenDirs);
+  for (const dir of shown) dirs.delete(dir);
+  setHiddenDirs(dirs);
+  return shown;
+}
+
 export function showAllDirectories() {
   setHiddenDirs(new Set());
 }
@@ -1528,14 +1538,13 @@ export function jumpToThread(id: number) {
     const t2 = S.threads.get(id);
     if (!t2) return;
     const f = S.fileByPath.get(t2.anchor.path);
-    if (isPathHidden(t2.anchor.path)) {
-      pushToast({ kind: 'info', text: 'This directory is hidden. Show it in the file tree to open this thread.' });
-      return;
-    }
     if (!t2.inScope || !f) {
       pushToast({ kind: 'info', text: `Thread #${id} is outside this diff. Open it in History.`, href: historyHref() });
       return;
     }
+    // Opening a thread shows its file: a hidden directory around it is shown again.
+    const shown = revealPath(f.path);
+    if (shown.length) pushToast({ kind: 'info', text: `Showing ${shown.map((d) => `${d}/`).join(', ')} again.` });
     if (!visibleFiles().some((file) => file.path === f.path)) setCommentedOnly(false);
     if (f && isCollapsed(f)) {
       colMap().set(f.path, false);

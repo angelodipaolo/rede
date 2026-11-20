@@ -79,14 +79,33 @@ describe('hidden directories', () => {
     expect(orderedOpenThreads().map((t) => t.id)).toEqual([1, 2]);
   });
 
-  it('keeps hidden-thread links from silently disabling the comment filter', () => {
+  it('shows a hidden directory again when a thread in it is opened, and keeps the comment filter', () => {
     put(1, 'src/a.ts');
     setCommentedOnly(true);
     setDirectoryHidden('src', true);
     jumpToThread(1);
     expect(S.commentedOnly).toBe(true);
-    expect(paths()).toEqual([]);
-    expect(S.toasts.at(-1)?.text).toContain('directory is hidden');
+    expect(paths()).toEqual(['src/a.ts']);
+    expect(S.hiddenDirs.size).toBe(0);
+    expect(S.toasts.at(-1)?.text).toBe('Showing src/ again.');
+  });
+
+  it('shows only the hidden directories around the opened thread', () => {
+    put(1, 'src/nested/b.ts');
+    setDirectoryHidden('src/nested', true);
+    setDirectoryHidden('test', true);
+    jumpToThread(1);
+    expect(paths()).toContain('src/nested/b.ts');
+    expect([...S.hiddenDirs]).toEqual(['test']);
+    expect(paths()).not.toContain('test/a.ts');
+  });
+
+  it('opens a thread in a visible file without a message', () => {
+    put(1, 'README.md');
+    setDirectoryHidden('src', true);
+    jumpToThread(1);
+    expect([...S.hiddenDirs]).toEqual(['src']);
+    expect(S.toasts).toEqual([]);
   });
 
   it('hides new files under a hidden directory after live updates and scope changes', () => {
